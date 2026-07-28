@@ -17,6 +17,12 @@ def test_openwa_rejects_bad_token(client: TestClient) -> None:
     assert response.status_code == 401
 
 
+def test_openwa_accepts_query_token(client: TestClient) -> None:
+    response = client.post("/webhooks/openwa?token=test-openwa", json=_event("msg-query-token"))
+    assert response.status_code == 200
+    assert response.json()["status"] == "processed"
+
+
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:
     headers = {"X-OpenWA-Token": "test-openwa"}
     first = client.post("/webhooks/openwa", json=_event(), headers=headers)

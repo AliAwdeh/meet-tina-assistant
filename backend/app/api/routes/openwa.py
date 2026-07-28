@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -29,13 +29,14 @@ def _verify_openwa(settings: Settings, token: str | None, event: dict) -> None:
 async def openwa_webhook(
     request: Request,
     x_openwa_token: str | None = Header(default=None, alias="X-OpenWA-Token"),
+    token: str | None = Query(default=None),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> OpenWAWebhookResponse:
     if request.headers.get("content-type", "").split(";")[0] != "application/json":
         raise HTTPException(status_code=415, detail="Expected application/json")
     event = await request.json()
-    _verify_openwa(settings, x_openwa_token, event)
+    _verify_openwa(settings, x_openwa_token or token, event)
     normalized = normalize_openwa_event(event)
     if not normalized.external_message_id or not normalized.conversation_id:
         raise HTTPException(status_code=422, detail="Missing OpenWA message or conversation id")
