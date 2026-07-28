@@ -38,12 +38,15 @@ class ExtractedAction(BaseModel):
     action_type: Literal[
         "create_task",
         "update_task",
+        "complete_task",
         "create_reminder",
         "create_meeting",
         "assign_goal",
         "send_email",
         "schedule_email",
+        "upsert_person",
         "record_person_note",
+        "query_records",
         "no_action",
     ]
     title: str | None = None
@@ -53,6 +56,8 @@ class ExtractedAction(BaseModel):
     subject: str | None = None
     body: str | None = None
     related_task_id: str | None = None
+    query_target: Literal["summary", "people", "tasks", "emails", "meetings", "reminders"] | None = None
+    target_text: str | None = None
     due_at: datetime | None = None
     meeting_at: datetime | None = None
     priority: Literal["low", "medium", "high", "urgent"] | None = None

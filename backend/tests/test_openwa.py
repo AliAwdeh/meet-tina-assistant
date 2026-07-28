@@ -143,6 +143,59 @@ def test_openwa_uses_context_to_assign_task_and_send_email(client: TestClient) -
         assert n8n_request.response == {"skipped": "N8N_EMAIL_WEBHOOK_URL not configured"}
 
 
+def test_openwa_can_read_and_update_related_records(client: TestClient) -> None:
+    first = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "orchestration-task",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Maya Haddad email maya@example.com needs to prepare the supplier follow up",
+            "type": "text",
+        },
+    }
+    assert client.post("/webhooks/openwa?token=test-openwa", json=first).status_code == 200
+
+    query = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "orchestration-query",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "What tasks does Maya have?",
+            "type": "text",
+        },
+    }
+    query_response = client.post("/webhooks/openwa?token=test-openwa", json=query)
+    assert query_response.status_code == 200
+    assert "prepare the supplier follow up" in query_response.json()["reply"]
+    assert "Maya Haddad" in query_response.json()["reply"]
+
+    complete = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "orchestration-complete",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Mark that task done",
+            "type": "text",
+        },
+    }
+    complete_response = client.post("/webhooks/openwa?token=test-openwa", json=complete)
+    assert complete_response.status_code == 200
+    assert "marked" in complete_response.json()["reply"].lower()
+
+    with SessionLocal() as db:
+        maya = db.scalar(select(Person).where(Person.email == "maya@example.com"))
+        assert maya is not None
+        task = db.scalar(select(Task).where(Task.assigned_person_id == maya.id))
+        assert task is not None
+        assert task.status == "completed"
+
+
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:
     headers = {"X-OpenWA-Token": "test-openwa"}
     first = client.post("/webhooks/openwa", json=_event(), headers=headers)

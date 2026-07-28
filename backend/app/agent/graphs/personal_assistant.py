@@ -7,13 +7,13 @@ from typing import Any, TypedDict
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agent.tools.registry import ToolContext, create_reminder_tool, create_task_tool, send_email_tool
 from app.core.config import Settings
 from app.integrations.ai.client import chat_model, structured_json
-from app.models.entities import Conversation, Message, Person, Task
+from app.models.entities import Conversation, Email, EmailRecipient, Meeting, Message, Person, Reminder, Task
 from app.schemas.agent import AgentResult, ClassificationResult, ExtractedAction
 from app.schemas.domain import NormalizedMessage, PersonCreate, ReminderCreate, TaskCreate
 
@@ -31,6 +31,10 @@ class AssistantState(TypedDict, total=False):
     conversation: Conversation | None
     last_person: Person | None
     last_task: Task | None
+    referenced_people: list[Person]
+    referenced_tasks: list[Task]
+    recent_messages: list[Message]
+    read_result: str | None
     tool_errors: list[str]
     reply: str
 
@@ -79,6 +83,52 @@ def _upsert_person(db: Session, payload: PersonCreate) -> Person:
     return person
 
 
+def _query_tokens(text: str) -> list[str]:
+    ignored = {"send", "email", "task", "tasks"}
+    return [token.lower() for token in re.findall(r"[A-Za-z][A-Za-z'-]{1,}", text) if token.lower() not in ignored]
+
+
+def _find_referenced_people(db: Session, text: str, last_person: Person | None = None, limit: int = 10) -> list[Person]:
+    found: list[Person] = []
+    seen: set[str] = set()
+    for payload in _extract_people_from_text(text):
+        person = db.scalar(select(Person).where(Person.email == str(payload.email))) if payload.email else None
+        if person and person.id not in seen:
+            found.append(person)
+            seen.add(person.id)
+    for token in _query_tokens(text):
+        if len(token) < 3:
+            continue
+        matches = db.scalars(select(Person).where(Person.active.is_(True), Person.full_name.ilike(f"%{token}%")).limit(limit)).all()
+        for person in matches:
+            if person.id not in seen:
+                found.append(person)
+                seen.add(person.id)
+    if not found and any(word in text.lower().split() for word in ["him", "her", "them", "that"]) and last_person is not None:
+        found.append(last_person)
+    return found[:limit]
+
+
+def _find_referenced_tasks(db: Session, text: str, people: list[Person], last_task: Task | None = None, limit: int = 10) -> list[Task]:
+    statuses = ("open", "pending", "in_progress")
+    stmt = select(Task).where(Task.status.in_(statuses)).order_by(Task.created_at.desc()).limit(limit)
+    if people:
+        stmt = stmt.where(Task.assigned_person_id.in_([person.id for person in people]))
+    tasks = list(db.scalars(stmt))
+    if not tasks and last_task is not None:
+        tasks.append(last_task)
+    tokens = [token for token in _query_tokens(text) if len(token) > 3]
+    if tokens and not people:
+        matching = []
+        for task in tasks:
+            haystack = f"{task.title} {task.description or ''}".lower()
+            if any(token in haystack for token in tokens):
+                matching.append(task)
+        if matching:
+            tasks = matching
+    return tasks[:limit]
+
+
 def _conversation_context(db: Session, message: NormalizedMessage) -> tuple[Conversation | None, Person | None, Task | None]:
     conversation = db.scalar(select(Conversation).where(Conversation.whatsapp_chat_id == message.conversation_id))
     state = conversation.state if conversation and conversation.state else {}
@@ -121,6 +171,32 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
     due_at = None
     if "tomorrow" in lowered:
         due_at = datetime.now(UTC) + timedelta(days=1)
+    read_verbs = ("show", "list", "what", "which", "check", "find", "get", "who", "where", "status", "summary")
+    if any(verb in lowered for verb in read_verbs):
+        if any(word in lowered for word in ["task", "tasks", "todo", "to do", "needs to"]):
+            return ExtractedAction(action_type="query_records", query_target="tasks", target_text=text, confidence=0.86)
+        if any(word in lowered for word in ["person", "people", "contact", "email address", "phone"]) or lowered.startswith("who"):
+            return ExtractedAction(action_type="query_records", query_target="people", target_text=text, confidence=0.84)
+        if any(word in lowered for word in ["email", "emails", "n8n", "integration", "failed"]):
+            return ExtractedAction(action_type="query_records", query_target="emails", target_text=text, confidence=0.84)
+        if any(word in lowered for word in ["meeting", "meetings"]):
+            return ExtractedAction(action_type="query_records", query_target="meetings", target_text=text, confidence=0.82)
+        if "reminder" in lowered or "reminders" in lowered:
+            return ExtractedAction(action_type="query_records", query_target="reminders", target_text=text, confidence=0.82)
+        if "everything" in lowered or "summary" in lowered:
+            return ExtractedAction(action_type="query_records", query_target="summary", target_text=text, confidence=0.82)
+    completion_words = ["complete", "completed", "done", "mark"]
+    task_references = ["task", "that", "it"]
+    if any(word in lowered for word in completion_words) and any(word in lowered for word in task_references):
+        related_task_id = last_task.id if last_task is not None else None
+        return ExtractedAction(
+            action_type="complete_task",
+            title=last_task.title if last_task is not None else None,
+            related_task_id=related_task_id,
+            target_text=text,
+            confidence=0.82,
+            missing_fields=[] if related_task_id or state.get("referenced_tasks") else ["task"],
+        )
     if "send" in lowered and "email" in lowered:
         recipient_email = person_emails or ([last_person.email] if last_person and last_person.email else [])
         recipient_name = person_names or ([last_person.full_name] if last_person else [])
@@ -142,6 +218,15 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
             related_task_id=related_task_id,
             confidence=0.86,
             missing_fields=missing_fields,
+        )
+    if extracted_people and not any(word in lowered for word in ["task", "needs to", "send", "remind"]):
+        return ExtractedAction(
+            action_type="upsert_person",
+            title=person_names[0] if person_names else None,
+            description=text,
+            person_names=person_names,
+            person_emails=person_emails,
+            confidence=0.82,
         )
     if "remind" in lowered:
         return ExtractedAction(
@@ -167,23 +252,46 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
     return ExtractedAction(action_type="no_action", description=text, confidence=0.8)
 
 
-async def classify_intent(state: AssistantState) -> AssistantState:
+async def load_context(state: AssistantState) -> AssistantState:
     message = state["message"]
-    settings = state["settings"]
     db = state["db"]
     conversation, last_person, last_task = _conversation_context(db, message)
     state["conversation"] = conversation
     state["last_person"] = last_person
     state["last_task"] = last_task
+    text = message.text or ""
+    people = _find_referenced_people(db, text, last_person)
+    tasks = _find_referenced_tasks(db, text, people, last_task)
+    if not people and last_person is not None:
+        people = [last_person]
+    state["referenced_people"] = people
+    state["referenced_tasks"] = tasks
+    state["recent_messages"] = (
+        list(db.scalars(select(Message).where(Message.conversation_id == conversation.id).order_by(Message.created_at.desc()).limit(12)))
+        if conversation is not None
+        else []
+    )
     state["tool_errors"] = []
+    state["read_result"] = None
+    return state
+
+
+async def classify_intent(state: AssistantState) -> AssistantState:
+    settings = state["settings"]
     fallback_action = _heuristic_action(state)
     intent = "general_conversation"
     if fallback_action.action_type == "create_reminder":
         intent = "create_reminder"
     elif fallback_action.action_type == "create_task":
         intent = "create_task"
+    elif fallback_action.action_type == "complete_task":
+        intent = "complete_task"
     elif fallback_action.action_type == "send_email":
         intent = "send_email"
+    elif fallback_action.action_type == "query_records":
+        intent = "query_records"
+    elif fallback_action.action_type == "upsert_person":
+        intent = "record_person_note"
     fallback_intent = {
         "intent": intent,
         "confidence": fallback_action.confidence,
@@ -249,6 +357,198 @@ def _remember(
     if email_id is not None:
         state["last_email_id"] = email_id
     conversation.state = state
+
+
+def _first_action(state: AssistantState) -> ExtractedAction:
+    return state.get("actions", [ExtractedAction(action_type="no_action")])[0]
+
+
+def _format_task(db: Session, task: Task) -> str:
+    person = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
+    assignee = f" for {person.full_name}" if person else ""
+    due = f", due {task.due_date.date().isoformat()}" if task.due_date else ""
+    return f"{task.title}{assignee} ({task.status}{due})"
+
+
+async def records_agent(state: AssistantState) -> AssistantState:
+    action = _first_action(state)
+    if action.action_type != "query_records":
+        return state
+    db = state["db"]
+    target = action.query_target or "summary"
+    people = state.get("referenced_people", [])
+    if target == "tasks":
+        tasks = state.get("referenced_tasks", [])
+        if not tasks:
+            stmt = select(Task).where(Task.status.not_in(["completed", "cancelled"])).order_by(Task.created_at.desc()).limit(10)
+            tasks = list(db.scalars(stmt))
+        if not tasks:
+            state["read_result"] = "I do not see any open tasks."
+        else:
+            state["read_result"] = "Open tasks:\n" + "\n".join(f"- {_format_task(db, task)}" for task in tasks[:10])
+    elif target == "people":
+        rows = people or list(db.scalars(select(Person).where(Person.active.is_(True)).order_by(Person.full_name).limit(10)))
+        if not rows:
+            state["read_result"] = "I do not see any saved people yet."
+        else:
+            state["read_result"] = "People I found:\n" + "\n".join(
+                f"- {person.full_name} <{person.email or 'no email'}>" for person in rows[:10]
+            )
+    elif target == "emails":
+        emails = list(db.scalars(select(Email).order_by(Email.created_at.desc()).limit(10)))
+        if not emails:
+            state["read_result"] = "I do not see any email records yet."
+        else:
+            lines = []
+            for email in emails:
+                recipients = db.scalars(select(EmailRecipient).where(EmailRecipient.email_id == email.id)).all()
+                to = ", ".join(recipient.email_address for recipient in recipients) or "no recipient"
+                lines.append(f"- {email.subject} to {to}: {email.status}")
+            state["read_result"] = "Recent emails:\n" + "\n".join(lines)
+    elif target == "meetings":
+        meetings = list(db.scalars(select(Meeting).order_by(Meeting.start_time.asc()).limit(10)))
+        state["read_result"] = (
+            "Upcoming meetings:\n"
+            + "\n".join(f"- {meeting.title} at {meeting.start_time.isoformat()} ({meeting.status})" for meeting in meetings)
+            if meetings
+            else "I do not see any meetings yet."
+        )
+    elif target == "reminders":
+        reminders = list(db.scalars(select(Reminder).order_by(Reminder.trigger_time.asc()).limit(10)))
+        state["read_result"] = (
+            "Reminders:\n"
+            + "\n".join(f"- {reminder.title} at {reminder.trigger_time.isoformat()} ({reminder.status})" for reminder in reminders)
+            if reminders
+            else "I do not see any reminders yet."
+        )
+    else:
+        people_count = db.scalar(select(func.count()).select_from(Person).where(Person.active.is_(True))) or 0
+        task_count = db.scalar(select(func.count()).select_from(Task).where(Task.status.not_in(["completed", "cancelled"]))) or 0
+        failed_email_count = db.scalar(select(func.count()).select_from(Email).where(Email.status == "failed")) or 0
+        state["read_result"] = f"I see {people_count} people, {task_count} open tasks, and {failed_email_count} failed email integrations."
+    return state
+
+
+async def people_agent(state: AssistantState) -> AssistantState:
+    action = _first_action(state)
+    if action.action_type not in {"upsert_person", "create_task", "send_email"}:
+        return state
+    db = state["db"]
+    conversation = state.get("conversation")
+    people = list(state.get("referenced_people", []))
+    seen = {person.id for person in people}
+    for name, email in zip(action.person_names or [], action.person_emails or [], strict=False):
+        person = _upsert_person(db, PersonCreate(full_name=name or _name_from_email(email), email=email))
+        if person.id not in seen:
+            people.append(person)
+            seen.add(person.id)
+    if people:
+        state["referenced_people"] = people
+        state["last_person"] = people[0]
+        _remember(conversation, person=people[0])
+    if action.action_type == "upsert_person" and people:
+        state["persisted_entity_ids"] = state.get("persisted_entity_ids", []) + [people[0].id]
+    return state
+
+
+async def task_agent(state: AssistantState) -> AssistantState:
+    action = _first_action(state)
+    if action.action_type not in {"create_task", "complete_task"}:
+        return state
+    db = state["db"]
+    message = state["message"]
+    conversation = state.get("conversation")
+    context = ToolContext(db=db, actor_type="openwa", actor_id=message.sender_phone, request_id=message.external_message_id)
+    persisted = list(state.get("persisted_entity_ids", []))
+    if action.action_type == "create_task" and action.title:
+        people = state.get("referenced_people", [])
+        result = create_task_tool(
+            context,
+            TaskCreate(
+                title=action.title,
+                description=action.description,
+                priority=action.priority or "medium",
+                assigned_person_id=people[0].id if people else None,
+                due_date=action.due_at,
+            ),
+        )
+        persisted.append(result["id"])
+        task = db.get(Task, result["id"])
+        current_message = db.scalar(select(Message).where(Message.external_message_id == message.external_message_id))
+        if task is not None and current_message is not None:
+            task.source_message_id = current_message.id
+        state["last_task"] = task
+        state["referenced_tasks"] = [task] if task is not None else []
+        _remember(conversation, person=people[0] if people else None, task=task)
+    elif action.action_type == "complete_task":
+        task = db.get(Task, action.related_task_id) if action.related_task_id else None
+        if task is None and state.get("referenced_tasks"):
+            task = state["referenced_tasks"][0]
+        if task is None:
+            state.setdefault("tool_errors", []).append("missing_task")
+        else:
+            task.status = "completed"
+            task.completed_at = datetime.now(UTC)
+            persisted.append(task.id)
+            state["last_task"] = task
+            _remember(conversation, task=task)
+    state["persisted_entity_ids"] = persisted
+    return state
+
+
+async def reminder_agent(state: AssistantState) -> AssistantState:
+    action = _first_action(state)
+    if action.action_type != "create_reminder" or not action.title or not action.due_at:
+        return state
+    context = ToolContext(
+        db=state["db"],
+        actor_type="openwa",
+        actor_id=state["message"].sender_phone,
+        request_id=state["message"].external_message_id,
+    )
+    result = create_reminder_tool(
+        context,
+        ReminderCreate(title=action.title, description=action.description, trigger_time=action.due_at),
+    )
+    state["persisted_entity_ids"] = state.get("persisted_entity_ids", []) + [result["id"]]
+    return state
+
+
+async def email_agent(state: AssistantState) -> AssistantState:
+    action = _first_action(state)
+    if action.action_type != "send_email":
+        return state
+    db = state["db"]
+    message = state["message"]
+    people = state.get("referenced_people", [])
+    related_task = db.get(Task, action.related_task_id) if action.related_task_id else None
+    if related_task is None and state.get("referenced_tasks"):
+        related_task = state["referenced_tasks"][0]
+    if not people or not action.subject or not action.body:
+        state.setdefault("tool_errors", []).append("missing_email_context")
+        return state
+    try:
+        result = await send_email_tool(
+            ToolContext(db=db, actor_type="openwa", actor_id=message.sender_phone, request_id=message.external_message_id),
+            state["settings"],
+            to_people=people,
+            subject=action.subject,
+            text_body=action.body,
+            related_task=related_task,
+        )
+    except Exception:
+        logger.exception("agent_send_email_failed", extra={"message_id": message.external_message_id})
+        state.setdefault("tool_errors", []).append("email_send_failed")
+        return state
+    if result.get("ok"):
+        state["persisted_entity_ids"] = state.get("persisted_entity_ids", []) + [str(result["id"])]
+        _remember(state.get("conversation"), person=people[0], task=related_task, email_id=str(result["id"]))
+        state["last_person"] = people[0]
+        if related_task is not None:
+            state["last_task"] = related_task
+    else:
+        state.setdefault("tool_errors", []).append("email_send_failed")
+    return state
 
 
 async def execute_tools(state: AssistantState) -> AssistantState:
@@ -359,9 +659,13 @@ async def _general_conversation_reply(state: AssistantState) -> str:
 
 async def generate_reply(state: AssistantState) -> AssistantState:
     action = state.get("actions", [ExtractedAction(action_type="no_action")])[0]
-    if state.get("tool_errors"):
+    if state.get("read_result"):
+        state["reply"] = state["read_result"] or "I checked, but I did not find anything relevant."
+    elif state.get("tool_errors"):
         if "email_send_failed" in state["tool_errors"]:
             state["reply"] = "I found the person and task, but the email send failed on the integration side. I logged it so you can retry."
+        elif "missing_task" in state["tool_errors"]:
+            state["reply"] = "I can update a task, but I could not tell which task you meant."
         else:
             state["reply"] = "I can send it, but I need the recipient email or the task content first."
     elif action.missing_fields:
@@ -372,6 +676,12 @@ async def generate_reply(state: AssistantState) -> AssistantState:
     elif action.action_type == "create_task" and state.get("persisted_entity_ids"):
         person = state.get("last_person")
         state["reply"] = f"Done. I saved that as a task for {person.full_name}." if person else "Done. I saved that as a task."
+    elif action.action_type == "complete_task" and state.get("persisted_entity_ids"):
+        task = state.get("last_task")
+        state["reply"] = f"Done. I marked {task.title} as completed." if task else "Done. I marked the task as completed."
+    elif action.action_type == "upsert_person" and state.get("persisted_entity_ids"):
+        person = state.get("last_person")
+        state["reply"] = f"Done. I saved {person.full_name}." if person else "Done. I saved the contact."
     elif action.action_type == "send_email" and state.get("persisted_entity_ids"):
         person = state.get("last_person")
         target = f" to {person.full_name}" if person else ""
@@ -385,12 +695,22 @@ async def generate_reply(state: AssistantState) -> AssistantState:
 
 def build_graph():
     graph = StateGraph(AssistantState)
+    graph.add_node("load_context", load_context)
     graph.add_node("classify_intent", classify_intent)
-    graph.add_node("execute_tools", execute_tools)
+    graph.add_node("records_agent", records_agent)
+    graph.add_node("people_agent", people_agent)
+    graph.add_node("task_agent", task_agent)
+    graph.add_node("reminder_agent", reminder_agent)
+    graph.add_node("email_agent", email_agent)
     graph.add_node("generate_reply", generate_reply)
-    graph.set_entry_point("classify_intent")
-    graph.add_edge("classify_intent", "execute_tools")
-    graph.add_edge("execute_tools", "generate_reply")
+    graph.set_entry_point("load_context")
+    graph.add_edge("load_context", "classify_intent")
+    graph.add_edge("classify_intent", "records_agent")
+    graph.add_edge("records_agent", "people_agent")
+    graph.add_edge("people_agent", "task_agent")
+    graph.add_edge("task_agent", "reminder_agent")
+    graph.add_edge("reminder_agent", "email_agent")
+    graph.add_edge("email_agent", "generate_reply")
     graph.add_edge("generate_reply", END)
     return graph.compile()
 
