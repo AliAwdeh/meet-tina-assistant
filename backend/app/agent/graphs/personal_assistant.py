@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.agent.tools.registry import ToolContext, create_reminder_tool, create_task_tool
@@ -74,7 +75,14 @@ async def classify_intent(state: AssistantState) -> AssistantState:
         message.text or "",
         fallback_intent,
     )
-    state["classification"] = ClassificationResult.model_validate(raw)
+    try:
+        state["classification"] = ClassificationResult.model_validate(raw)
+    except ValidationError:
+        raw["intent"] = fallback_intent["intent"]
+        raw.setdefault("confidence", fallback_intent["confidence"])
+        raw.setdefault("requires_confirmation", fallback_intent["requires_confirmation"])
+        raw["rationale"] = f"Model returned unsupported intent; {fallback_intent['rationale']}"
+        state["classification"] = ClassificationResult.model_validate(raw)
     state["actions"] = [fallback_action]
     return state
 

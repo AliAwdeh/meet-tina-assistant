@@ -12,6 +12,14 @@ def _event(message_id: str = "msg-1") -> dict[str, object]:
     }
 
 
+def test_openwa_accepts_general_greeting(client: TestClient) -> None:
+    event = _event("msg-greeting")
+    event["body"] = "Hi"
+    response = client.post("/webhooks/openwa", json=event, headers={"X-OpenWA-Token": "test-openwa"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "processed"
+
+
 def test_openwa_rejects_bad_token(client: TestClient) -> None:
     response = client.post("/webhooks/openwa", json=_event(), headers={"X-OpenWA-Token": "wrong"})
     assert response.status_code == 401
