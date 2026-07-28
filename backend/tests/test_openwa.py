@@ -31,6 +31,27 @@ def test_openwa_accepts_query_token(client: TestClient) -> None:
     assert response.json()["status"] == "processed"
 
 
+def test_openwa_accepts_wrapped_message_payload(client: TestClient) -> None:
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "wrapped-message",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "to": "96171056438@c.us",
+            "body": "Hi",
+            "type": "text",
+            "direction": "incoming",
+            "timestamp": 1785252118,
+            "chatName": "Ali Awdeh",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    assert response.json()["status"] == "processed"
+
+
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:
     headers = {"X-OpenWA-Token": "test-openwa"}
     first = client.post("/webhooks/openwa", json=_event(), headers=headers)
