@@ -104,6 +104,7 @@ async def send_email_tool(
     n8n_request = await N8nClient(settings).send_email(context.db, payload)
     email.n8n_request_id = n8n_request.request_id
     email.status = n8n_request.status
+    ok = n8n_request.status != "failed"
     write_audit(
         context.db,
         actor_type=context.actor_type,
@@ -113,7 +114,7 @@ async def send_email_tool(
         entity_id=email.id,
         safe_metadata={"recipient_count": len(recipients), "related_task_ids": related_task_ids},
     )
-    return {"ok": True, "id": email.id, "n8n_status": n8n_request.status, "retryable": n8n_request.status == "queued"}
+    return {"ok": ok, "id": email.id, "n8n_status": n8n_request.status, "retryable": n8n_request.status in {"queued", "failed"}}
 
 
 class EmailSendPayload(BaseModel):

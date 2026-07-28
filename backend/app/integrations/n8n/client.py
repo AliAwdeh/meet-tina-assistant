@@ -55,8 +55,7 @@ class N8nClient:
         db.flush()
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(self.settings.n8n_email_webhook_url, content=body, headers=headers)
-            record.status = "sent_to_n8n"
             record.response = {"status_code": response.status_code, "body": response.text[:2000]}
-            response.raise_for_status()
+            record.status = "failed" if response.is_error else "sent_to_n8n"
         db.flush()
         return record

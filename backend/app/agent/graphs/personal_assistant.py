@@ -314,6 +314,8 @@ async def execute_tools(state: AssistantState) -> AssistantState:
                 state["last_person"] = people[0]
                 if related_task is not None:
                     state["last_task"] = related_task
+            else:
+                state.setdefault("tool_errors", []).append("email_send_failed")
     state["persisted_entity_ids"] = persisted
     return state
 
