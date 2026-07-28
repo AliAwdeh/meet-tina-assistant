@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     app_name: str = "Meet Tina"
     environment: str = "development"
     public_base_url: str = "http://localhost:5000"
+    dashboard_base_url: str = "http://localhost:5174"
     api_host: str = "0.0.0.0"
     api_port: int = 5000
     log_level: str = "INFO"
