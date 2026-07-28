@@ -23,6 +23,8 @@ npm install
 npm run dev -- --host 0.0.0.0
 ```
 
+The dashboard dev server runs on port `5174` to avoid the CRM frontend on `5173`.
+
 ## Docker Compose
 
 ```bash
