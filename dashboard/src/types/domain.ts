@@ -10,6 +10,14 @@ export type DashboardSummary = {
   scheduler_health: string;
 };
 
+export type User = {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  status: string;
+};
+
 export type Person = {
   id: string;
   full_name: string;

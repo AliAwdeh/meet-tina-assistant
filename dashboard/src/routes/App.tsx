@@ -1,10 +1,14 @@
 import { Bell, CalendarDays, CheckSquare, LayoutDashboard, Mail, MessageCircle, Settings as SettingsIcon, Users } from "lucide-react";
 import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiPost, shouldRetry } from "../api/client";
 import { ErrorBoundary } from "../components/ErrorBoundary";
-import { Button } from "../components/ui";
+import { Button, LoadingPanel } from "../components/ui";
+import { Login } from "../pages/Login";
 import { Overview } from "../pages/Overview";
 import { Records } from "../pages/Records";
 import { Conversations, Emails, Settings } from "../pages/StaticPages";
+import type { User } from "../types/domain";
 
 const nav = [
   { id: "Overview", icon: LayoutDashboard },
@@ -21,15 +25,48 @@ type Page = (typeof nav)[number]["id"];
 
 export function App() {
   const [page, setPage] = useState<Page>("Overview");
+  const queryClient = useQueryClient();
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: () => apiGet<User>("/api/auth/me"),
+    retry: shouldRetry
+  });
+  const logout = useMutation({
+    mutationFn: () => apiPost<{ status: string }>("/api/auth/logout", {}),
+    onSettled: () => {
+      queryClient.clear();
+      void queryClient.invalidateQueries({ queryKey: ["me"] });
+    }
+  });
+
+  if (me.isLoading) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-[#f7f4ee] px-5">
+        <div className="w-full max-w-sm">
+          <LoadingPanel label="Checking session" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!me.data) {
+    return <Login onAuthenticated={(user) => queryClient.setQueryData(["me"], user)} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#f7f4ee] text-ink">
       <header className="border-b border-stone-200 bg-white">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-normal">Meet Tina</h1>
-            <p className="text-sm text-stone-500">Operational assistant dashboard</p>
+            <p className="text-sm text-stone-500">{me.data.name}</p>
           </div>
-          <Button>New task</Button>
+          <div className="flex items-center gap-2">
+            <Button>New task</Button>
+            <Button className="bg-white text-ink ring-1 ring-stone-200 hover:bg-stone-100" disabled={logout.isPending} onClick={() => logout.mutate()}>
+              Sign out
+            </Button>
+          </div>
         </div>
       </header>
       <div className="mx-auto grid max-w-7xl gap-6 px-5 py-6 lg:grid-cols-[220px_1fr]">
