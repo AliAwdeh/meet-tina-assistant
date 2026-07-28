@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
-from app.models.entities import File, Message
+from app.models.entities import Email, EmailRecipient, File, Message, N8nRequest, Person, Task
 
 
 def _event(message_id: str = "msg-1") -> dict[str, object]:
@@ -93,6 +93,54 @@ def test_openwa_stores_wrapped_voice_media(client: TestClient) -> None:
         assert media is not None
         assert media.mime_type == "audio/ogg"
         assert media.safe_file_name.endswith(".ogg")
+
+
+def test_openwa_uses_context_to_assign_task_and_send_email(client: TestClient) -> None:
+    first = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "context-task",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Ali awdeh email ali.awdeh@maids.cc needs to email a report to me and the ceo mario",
+            "type": "text",
+        },
+    }
+    first_response = client.post("/webhooks/openwa?token=test-openwa", json=first)
+    assert first_response.status_code == 200
+    assert "task for Ali Awdeh" in first_response.json()["reply"]
+
+    second = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "context-email",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Send him that as an email",
+            "type": "text",
+        },
+    }
+    second_response = client.post("/webhooks/openwa?token=test-openwa", json=second)
+    assert second_response.status_code == 200
+    assert "sent the email to Ali Awdeh" in second_response.json()["reply"]
+
+    with SessionLocal() as db:
+        ali = db.scalar(select(Person).where(Person.email == "ali.awdeh@maids.cc"))
+        assert ali is not None
+        task = db.scalar(select(Task).where(Task.assigned_person_id == ali.id))
+        assert task is not None
+        assert task.title == "email a report to me and the ceo mario"
+        email = db.scalar(select(Email))
+        assert email is not None
+        assert email.status == "queued"
+        recipient = db.scalar(select(EmailRecipient).where(EmailRecipient.email_id == email.id))
+        assert recipient is not None
+        assert recipient.email_address == "ali.awdeh@maids.cc"
+        n8n_request = db.scalar(select(N8nRequest).where(N8nRequest.request_id == email.n8n_request_id))
+        assert n8n_request is not None
+        assert n8n_request.response == {"skipped": "N8N_EMAIL_WEBHOOK_URL not configured"}
 
 
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:

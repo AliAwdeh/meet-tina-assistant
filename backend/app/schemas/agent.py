@@ -49,6 +49,10 @@ class ExtractedAction(BaseModel):
     title: str | None = None
     description: str | None = None
     person_names: list[str] = Field(default_factory=list)
+    person_emails: list[str] = Field(default_factory=list)
+    subject: str | None = None
+    body: str | None = None
+    related_task_id: str | None = None
     due_at: datetime | None = None
     meeting_at: datetime | None = None
     priority: Literal["low", "medium", "high", "urgent"] | None = None
