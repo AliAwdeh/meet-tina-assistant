@@ -49,7 +49,7 @@ Use distinct secrets for dashboard JWTs, OpenWA, n8n callbacks, n8n outbound aut
 On a small host without Docker, clone the repo and run only the API:
 
 ```bash
-cd /opt/meet-tina/backend
+cd /opt/meet-tina-assistant/backend
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev]"

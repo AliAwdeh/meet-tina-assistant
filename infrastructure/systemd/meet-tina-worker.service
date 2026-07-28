@@ -3,9 +3,9 @@ Description=Meet Tina Media Worker
 After=network.target
 
 [Service]
-WorkingDirectory=/opt/meet-tina/backend
-EnvironmentFile=/opt/meet-tina/.env
-ExecStart=/usr/bin/python3 -m app.workers.media_worker
+WorkingDirectory=/opt/meet-tina-assistant/backend
+EnvironmentFile=/opt/meet-tina-assistant/.env
+ExecStart=/opt/meet-tina-assistant/backend/.venv/bin/python -m app.workers.media_worker
 Restart=always
 RestartSec=5
 

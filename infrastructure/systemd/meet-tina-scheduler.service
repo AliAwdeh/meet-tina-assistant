@@ -3,9 +3,9 @@ Description=Meet Tina Scheduler
 After=network.target meet-tina-api.service
 
 [Service]
-WorkingDirectory=/opt/meet-tina/backend
-EnvironmentFile=/opt/meet-tina/.env
-ExecStart=/usr/bin/python3 -m app.scheduler.runner
+WorkingDirectory=/opt/meet-tina-assistant/backend
+EnvironmentFile=/opt/meet-tina-assistant/.env
+ExecStart=/opt/meet-tina-assistant/backend/.venv/bin/python -m app.scheduler.runner
 Restart=always
 RestartSec=5
 

@@ -3,9 +3,9 @@ Description=Meet Tina API
 After=network.target
 
 [Service]
-WorkingDirectory=/opt/meet-tina/backend
-EnvironmentFile=/opt/meet-tina/.env
-ExecStart=/usr/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 5000
+WorkingDirectory=/opt/meet-tina-assistant/backend
+EnvironmentFile=/opt/meet-tina-assistant/.env
+ExecStart=/opt/meet-tina-assistant/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 5000
 Restart=always
 RestartSec=5
 
