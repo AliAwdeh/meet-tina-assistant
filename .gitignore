@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+data/*
+backend/data/*
+!data/.gitkeep
+!data/**/.gitkeep
+*.db
+.DS_Store

@@ -1,0 +1,13 @@
+[Unit]
+Description=Meet Tina Scheduler
+After=network.target meet-tina-api.service
+
+[Service]
+WorkingDirectory=/opt/meet-tina/backend
+EnvironmentFile=/opt/meet-tina/.env
+ExecStart=/usr/bin/python3 -m app.scheduler.runner
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
