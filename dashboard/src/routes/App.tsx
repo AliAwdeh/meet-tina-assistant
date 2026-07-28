@@ -1,5 +1,6 @@
 import { Bell, CalendarDays, CheckSquare, LayoutDashboard, Mail, MessageCircle, Settings as SettingsIcon, Users } from "lucide-react";
 import { useState } from "react";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 import { Button } from "../components/ui";
 import { Overview } from "../pages/Overview";
 import { Records } from "../pages/Records";
@@ -50,7 +51,9 @@ export function App() {
             );
           })}
         </nav>
-        <main>{renderPage(page)}</main>
+        <main>
+          <ErrorBoundary key={page}>{renderPage(page)}</ErrorBoundary>
+        </main>
       </div>
     </div>
   );

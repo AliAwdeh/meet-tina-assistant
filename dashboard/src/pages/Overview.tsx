@@ -1,14 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { Activity, AlertTriangle, CalendarClock, MailCheck } from "lucide-react";
 import type { ReactNode } from "react";
-import { apiGet } from "../api/client";
-import { Metric, Panel } from "../components/ui";
+import { apiGet, errorMessage, shouldRetry } from "../api/client";
+import { Metric, Notice, Panel } from "../components/ui";
 import type { DashboardSummary } from "../types/domain";
 
 export function Overview() {
   const summary = useQuery({
     queryKey: ["summary"],
-    queryFn: () => apiGet<DashboardSummary>("/api/dashboard/summary")
+    queryFn: () => apiGet<DashboardSummary>("/api/dashboard/summary"),
+    retry: shouldRetry
   });
 
   const data =
@@ -27,6 +28,7 @@ export function Overview() {
 
   return (
     <div className="space-y-6">
+      {summary.isError && <Notice title="Dashboard data unavailable">{errorMessage(summary.error)}</Notice>}
       <div className="grid gap-3 md:grid-cols-4">
         <Metric label="Today's meetings" value={data.today_meetings} />
         <Metric label="Due tasks" value={data.due_tasks} />

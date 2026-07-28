@@ -28,3 +28,16 @@ export function Metric({ label, value, tone = "default" }: { label: string; valu
     </div>
   );
 }
+
+export function Notice({ title, children }: PropsWithChildren<{ title: string }>) {
+  return (
+    <div className="border border-amber/40 bg-amber/10 px-4 py-3 text-sm text-ink">
+      <div className="font-semibold">{title}</div>
+      <div className="mt-1 text-stone-600">{children}</div>
+    </div>
+  );
+}
+
+export function LoadingPanel({ label = "Loading" }: { label?: string }) {
+  return <div className="border border-stone-200 bg-white px-4 py-10 text-center text-sm text-stone-500">{label}</div>;
+}
