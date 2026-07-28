@@ -19,6 +19,10 @@ SAFE_EXTENSIONS = {
 }
 
 
+def normalize_mime_type(mime_type: str) -> str:
+    return mime_type.split(";", 1)[0].strip().lower()
+
+
 def sanitize_name(name: str | None) -> str | None:
     if not name:
         return None
@@ -49,6 +53,7 @@ class LocalStorage:
     ) -> File:
         if len(content) > self.settings.media_max_bytes:
             raise ValueError("media file exceeds configured size limit")
+        mime_type = normalize_mime_type(mime_type)
         extension = SAFE_EXTENSIONS.get(mime_type, ".bin")
         safe_name = f"{uuid.uuid4()}{extension}"
         relative_path = f"{self.category_for_mime(mime_type)}/{safe_name}"

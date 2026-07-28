@@ -30,11 +30,10 @@ class OpenAICompatibleTranscriptionProvider:
         if not self.settings.ai_transcription_model:
             raise RuntimeError("AI_TRANSCRIPTION_MODEL is not configured")
         with file_path.open("rb") as audio:
-            result = await self.client.audio.transcriptions.create(
-                model=self.settings.ai_transcription_model,
-                file=audio,
-                language=language_hint,
-            )
+            kwargs = {"model": self.settings.ai_transcription_model, "file": audio}
+            if language_hint:
+                kwargs["language"] = language_hint
+            result = await self.client.audio.transcriptions.create(**kwargs)
         return TranscriptionResult(text=getattr(result, "text", ""), language=language_hint)
 
 

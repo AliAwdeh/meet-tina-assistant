@@ -1,4 +1,10 @@
+import base64
+
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from app.core.database import SessionLocal
+from app.models.entities import File, Message
 
 
 def _event(message_id: str = "msg-1") -> dict[str, object]:
@@ -52,6 +58,41 @@ def test_openwa_accepts_wrapped_message_payload(client: TestClient) -> None:
     response = client.post("/webhooks/openwa?token=test-openwa", json=event)
     assert response.status_code == 200
     assert response.json()["status"] == "processed"
+
+
+def test_openwa_stores_wrapped_voice_media(client: TestClient) -> None:
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "voice-message",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "to": "96171056438@c.us",
+            "body": "",
+            "type": "voice",
+            "direction": "incoming",
+            "timestamp": 1785252118,
+            "metadata": {
+                "media": {
+                    "mimetype": "audio/ogg; codecs=opus",
+                    "data": base64.b64encode(b"OggSfake-audio").decode(),
+                }
+            },
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    assert response.json()["status"] == "processed"
+    with SessionLocal() as db:
+        message = db.scalar(select(Message).where(Message.external_message_id == "voice-message"))
+        assert message is not None
+        assert message.message_type == "voice"
+        assert message.media_id is not None
+        media = db.get(File, message.media_id)
+        assert media is not None
+        assert media.mime_type == "audio/ogg"
+        assert media.safe_file_name.endswith(".ogg")
 
 
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:

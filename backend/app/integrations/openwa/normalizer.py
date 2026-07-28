@@ -21,8 +21,17 @@ def _pick(source: dict[str, Any], *keys: str) -> Any:
 
 
 def _message_type(event: dict[str, Any]) -> str:
-    explicit = str(event.get("type") or event.get("mimetype") or "").lower()
-    if "audio" in explicit or event.get("isVoice"):
+    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    media = metadata.get("media") if isinstance(metadata.get("media"), dict) else {}
+    explicit = str(
+        event.get("type")
+        or event.get("mimetype")
+        or event.get("mimeType")
+        or media.get("mimetype")
+        or media.get("mimeType")
+        or ""
+    ).lower()
+    if "audio" in explicit or "voice" in explicit or event.get("isVoice"):
         return "voice"
     if "image" in explicit:
         return "image"
@@ -71,7 +80,9 @@ def normalize_openwa_event(event: dict[str, Any]) -> NormalizedMessage:
         timestamp = datetime.now(UTC)
     text = _pick(payload, "body", "text", "caption", "content")
     media_path = _pick(payload, "mediaUrl", "clientUrl", "deprecatedMms3Url")
-    mime_type = _pick(payload, "mimetype", "mimeType")
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    media = metadata.get("media") if isinstance(metadata.get("media"), dict) else {}
+    mime_type = _pick(payload, "mimetype", "mimeType") or _pick(media, "mimetype", "mimeType")
     return NormalizedMessage(
         external_message_id=message_id[:255],
         conversation_id=chat_id[:255],
