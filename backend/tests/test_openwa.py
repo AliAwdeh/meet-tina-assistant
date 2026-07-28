@@ -18,6 +18,8 @@ def test_openwa_accepts_general_greeting(client: TestClient) -> None:
     response = client.post("/webhooks/openwa", json=event, headers={"X-OpenWA-Token": "test-openwa"})
     assert response.status_code == 200
     assert response.json()["status"] == "processed"
+    assert response.json()["reply"] != "Noted."
+    assert "task" in response.json()["reply"].lower()
 
 
 def test_openwa_rejects_bad_token(client: TestClient) -> None:

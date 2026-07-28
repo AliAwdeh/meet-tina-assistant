@@ -1,7 +1,9 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TypedDict
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -11,6 +13,8 @@ from app.core.config import Settings
 from app.integrations.ai.client import chat_model, structured_json
 from app.schemas.agent import AgentResult, ClassificationResult, ExtractedAction
 from app.schemas.domain import NormalizedMessage, ReminderCreate, TaskCreate
+
+logger = logging.getLogger(__name__)
 
 
 class AssistantState(TypedDict, total=False):
@@ -116,6 +120,43 @@ async def execute_tools(state: AssistantState) -> AssistantState:
     return state
 
 
+def _fallback_general_reply(text: str) -> str:
+    lowered = text.strip().lower()
+    greetings = {"hi", "hello", "hey", "مرحبا", "هلا", "اهلا", "أهلا"}
+    if lowered in greetings:
+        return "Hi! I am here. Tell me what you want me to handle: a task, reminder, meeting, email, or a quick note."
+    if "noted" in lowered or "note" in lowered:
+        return (
+            "You are right. I was using a fallback reply. Tell me what you want done, "
+            "and I will either handle it or ask one clear question."
+        )
+    return "I am here. Tell me what you want me to handle next."
+
+
+async def _general_conversation_reply(state: AssistantState) -> str:
+    message = state["message"]
+    model = chat_model(state["settings"])
+    if model is None:
+        return _fallback_general_reply(message.text or "")
+    system = Path(__file__).parents[1].joinpath("prompts/system.md").read_text()
+    prompt = (
+        f"{system}\n\n"
+        "Reply to the latest WhatsApp message as Meet Tina.\n"
+        "Keep it concise and useful, 1-4 short sentences.\n"
+        "If the user only greets you, greet them and offer concrete things you can do.\n"
+        "If they ask why something happened, answer directly.\n"
+        "Do not say an action was saved unless the tool layer already saved it.\n"
+        "Do not use the word 'Noted' as the whole reply."
+    )
+    try:
+        response = await model.ainvoke([SystemMessage(content=prompt), HumanMessage(content=message.text or "")])
+    except Exception:
+        logger.exception("general_reply_generation_failed", extra={"message_id": message.external_message_id})
+        return _fallback_general_reply(message.text or "")
+    reply = str(response.content).strip()
+    return reply or _fallback_general_reply(message.text or "")
+
+
 async def generate_reply(state: AssistantState) -> AssistantState:
     action = state.get("actions", [ExtractedAction(action_type="no_action")])[0]
     if action.missing_fields:
@@ -125,7 +166,7 @@ async def generate_reply(state: AssistantState) -> AssistantState:
     elif action.action_type == "create_reminder" and state.get("persisted_entity_ids"):
         state["reply"] = "Done. I created the reminder."
     else:
-        state["reply"] = "Noted."
+        state["reply"] = await _general_conversation_reply(state)
     return state
 
 
