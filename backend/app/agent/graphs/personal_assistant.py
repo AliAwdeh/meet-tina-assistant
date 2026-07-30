@@ -10,6 +10,7 @@ from langgraph.graph import END, StateGraph
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.agent.tools.registry import ToolContext, create_reminder_tool, create_task_tool, send_email_tool
 from app.core.config import Settings
@@ -740,6 +741,7 @@ def _remember(
     if email_id is not None:
         state["last_email_id"] = email_id
     conversation.state = state
+    flag_modified(conversation, "state")
 
 
 def _first_action(state: AssistantState) -> ExtractedAction:

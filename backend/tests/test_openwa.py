@@ -437,6 +437,11 @@ def test_openwa_creates_responsible_person_project_task_and_remembers_context(cl
         assert task is not None
         assert task.project_id == project.id
         assert task.priority == "high"
+        conversation = db.scalar(select(Conversation).where(Conversation.whatsapp_chat_id == "102907500351574@lid"))
+        assert conversation is not None
+        assert conversation.state["last_person_id"] == nagy.id
+        assert conversation.state["last_project_id"] == project.id
+        assert conversation.state["last_task_id"] == task.id
 
 
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:
