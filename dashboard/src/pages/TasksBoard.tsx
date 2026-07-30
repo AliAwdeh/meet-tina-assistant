@@ -13,7 +13,7 @@ const priorities = [
 ] as const;
 
 type Priority = (typeof priorities)[number]["id"];
-type DragState = { taskId: string; fromPriority: string; fromProjectId: string | null } | null;
+type DragState = { taskId: string; fromPriority: string; fromPersonId: string | null } | null;
 
 export function TasksBoard() {
   const queryClient = useQueryClient();
@@ -48,15 +48,15 @@ export function TasksBoard() {
     }
   });
   const moveTask = useMutation({
-    mutationFn: ({ taskId, priority, projectId }: { taskId: string; priority: Priority; projectId: string | null }) =>
-      apiPut<Task>(`/api/dashboard/tasks/${taskId}`, { priority, project_id: projectId }),
+    mutationFn: ({ taskId, priority, personId }: { taskId: string; priority: Priority; personId: string | null }) =>
+      apiPut<Task>(`/api/dashboard/tasks/${taskId}`, { priority, assigned_person_id: personId }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["Tasks"] });
       void queryClient.invalidateQueries({ queryKey: ["summary"] });
     }
   });
 
-  const projectGroups = useMemo(() => {
+  const personGroups = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
     const rows = tasks.data ?? [];
     const projectLookup = new Map((projects.data ?? []).map((project) => [project.id, project]));
@@ -79,30 +79,42 @@ export function TasksBoard() {
           return normalizedSearch.split(/\s+/).every((term) => haystack.includes(term));
         })
       : rows;
-    const groups = new Map<string, { id: string; projectId: string | null; name: string; owner?: string | null; tasks: Task[] }>();
-    for (const project of projects.data ?? []) {
-      groups.set(project.id, { id: project.id, projectId: project.id, name: project.name, owner: project.person_name, tasks: [] });
+    const groups = new Map<string, { id: string; personId: string | null; name: string; detail?: string | null; tasks: Task[] }>();
+    for (const person of people.data ?? []) {
+      groups.set(person.id, {
+        id: person.id,
+        personId: person.id,
+        name: person.full_name,
+        detail: person.company ?? person.email ?? null,
+        tasks: []
+      });
     }
     for (const task of filteredRows) {
-      const key = task.project_id ?? "none";
+      const key = task.assigned_person_id ?? "none";
       if (!groups.has(key)) {
-        groups.set(key, { id: key, projectId: task.project_id ?? null, name: task.project_name ?? "No project", tasks: [] });
+        groups.set(key, {
+          id: key,
+          personId: task.assigned_person_id ?? null,
+          name: task.assigned_person_name ?? "Unassigned",
+          detail: null,
+          tasks: []
+        });
       }
       groups.get(key)?.tasks.push(task);
     }
-    if (!groups.has("none")) groups.set("none", { id: "none", projectId: null, name: "No project", tasks: [] });
+    if (!groups.has("none")) groups.set("none", { id: "none", personId: null, name: "Unassigned", tasks: [] });
     const visibleGroups = Array.from(groups.values()).filter((group) => !normalizedSearch || group.tasks.length > 0);
     return visibleGroups.sort((a, b) => {
       if (a.id === "none") return 1;
       if (b.id === "none") return -1;
       return a.name.localeCompare(b.name);
     });
-  }, [projects.data, search, tasks.data]);
+  }, [people.data, projects.data, search, tasks.data]);
 
-  const onDrop = (projectId: string | null, priority: Priority) => {
+  const onDrop = (personId: string | null, priority: Priority) => {
     if (!dragged || moveTask.isPending) return;
-    if (dragged.fromPriority === priority && dragged.fromProjectId === projectId) return;
-    moveTask.mutate({ taskId: dragged.taskId, priority, projectId });
+    if (dragged.fromPriority === priority && dragged.fromPersonId === personId) return;
+    moveTask.mutate({ taskId: dragged.taskId, priority, personId });
     setDragged(null);
     setDropTarget(null);
   };
@@ -114,7 +126,7 @@ export function TasksBoard() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold">Tasks</h2>
-          <p className="text-sm text-stone-500">Project task board</p>
+          <p className="text-sm text-stone-500">People task board</p>
         </div>
         <Button
           className={secondaryButtonClass}
@@ -167,27 +179,27 @@ export function TasksBoard() {
         </div>
       )}
 
-      {projectGroups.length === 0 && (
+      {personGroups.length === 0 && (
         <div className="border-y border-stone-200 bg-white/80 px-4 py-8 text-sm text-stone-500">No tasks match the current search.</div>
       )}
 
-      {projectGroups.map((project) => (
-        <section className="border-y border-stone-200 bg-white/80 py-4" key={project.id}>
+      {personGroups.map((person) => (
+        <section className="border-y border-stone-200 bg-white/80 py-4" key={person.id}>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-4">
             <div className="flex min-w-0 items-center gap-2">
-              <FolderKanban className="shrink-0 text-mint" size={18} />
-              <h3 className="truncate text-base font-semibold">{project.name}</h3>
+              <UserRound className="shrink-0 text-mint" size={18} />
+              <h3 className="truncate text-base font-semibold">{person.name}</h3>
             </div>
             <span className="inline-flex items-center gap-1 text-sm text-stone-500">
-              {project.owner ? <UserRound size={15} /> : <CheckSquare size={15} />}
-              {project.owner ?? `${project.tasks.length} tasks`}
+              <CheckSquare size={15} />
+              {person.detail ? `${person.detail} · ${person.tasks.length} tasks` : `${person.tasks.length} tasks`}
             </span>
           </div>
 
           <div className="grid gap-3 px-4 xl:grid-cols-4">
             {priorities.map((priority) => {
-              const rows = project.tasks.filter((task) => task.priority === priority.id);
-              const targetKey = `${project.id}:${priority.id}`;
+              const rows = person.tasks.filter((task) => task.priority === priority.id);
+              const targetKey = `${person.id}:${priority.id}`;
               const isTarget = dropTarget === targetKey;
               return (
                 <div
@@ -200,7 +212,7 @@ export function TasksBoard() {
                     event.preventDefault();
                     setDropTarget(targetKey);
                   }}
-                  onDrop={() => onDrop(project.projectId, priority.id)}
+                  onDrop={() => onDrop(person.personId, priority.id)}
                 >
                   <div className={`flex h-10 items-center justify-between border-b px-3 text-sm font-medium ${priority.tone}`}>
                     <span>{priority.label}</span>
@@ -211,7 +223,7 @@ export function TasksBoard() {
                       <TaskTile
                         key={task.id}
                         task={task}
-                        onDragStart={() => setDragged({ taskId: task.id, fromPriority: task.priority, fromProjectId: task.project_id ?? null })}
+                        onDragStart={() => setDragged({ taskId: task.id, fromPriority: task.priority, fromPersonId: task.assigned_person_id ?? null })}
                         onEdit={() => {
                           setCreating(false);
                           setEditing(task);
@@ -259,6 +271,12 @@ function TaskTile({ task, onDragStart, onEdit }: { task: Task; onDragStart: () =
             <div className="mt-2 flex items-center gap-1 text-xs text-stone-500">
               <UserRound size={13} />
               <span className="truncate">{task.assigned_person_name}</span>
+            </div>
+          )}
+          {task.project_name && (
+            <div className="mt-1 flex items-center gap-1 text-xs text-stone-500">
+              <FolderKanban size={13} />
+              <span className="truncate">{task.project_name}</span>
             </div>
           )}
           {task.due_date && (
@@ -337,7 +355,7 @@ function TaskForm({
         </select>
       </label>
       <label className="block text-sm font-medium">
-        Person
+        Assigned person
         <select className={inputClass} value={form.assigned_person_id} onChange={(event) => setForm({ ...form, assigned_person_id: event.target.value })}>
           <option value="">Unassigned</option>
           {people.map((person) => (
