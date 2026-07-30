@@ -582,23 +582,34 @@ def _planner_system_prompt() -> str:
     system = Path(__file__).parents[1].joinpath("prompts/system.md").read_text()
     return (
         f"{system}\n\n"
-        "You are the intent classifier and planner for Meet Tina. Build an ordered platform action plan.\n"
+        "You are the intent classifier and planner for Meet Tina. You own semantic interpretation; "
+        "the code layer will only validate entities and execute explicit tools. Build an ordered platform action plan.\n"
         "Return only JSON in this shape: {\"actions\": [ExtractedAction, ...]}.\n"
         "Allowed action_type values: upsert_person, create_task, update_task, complete_task, create_reminder, "
         "send_email, query_records, no_action.\n"
         "Rules:\n"
+        "- Decide from meaning, not from brittle phrase templates. Names, projects, and task titles may appear in any order.\n"
         "- If the user asks to create/add/make/open a new task, plan create_task, not update_task.\n"
-        "- For 'create a new task for Ali called Travel Assist', person_names must be ['Ali'] and title must be 'Travel Assist'.\n"
-        "- Do not include command scaffolding like 'for Ali called' in task titles.\n"
+        "- A task title is the work to be done, not the command text around it. For example, in "
+        "'create a new task for Ali called Travel Assist', person_names is ['Ali'] and title is 'Travel Assist'.\n"
+        "- If the user creates a person and then says he/she/they in the same message, bind the pronoun to that newly named person.\n"
+        "- 'X is responsible for Y and Z project' usually means person X owns project Z and has task Y under that project.\n"
         "- Only move/update an existing task when the user clearly says move/change/update/mark and a task is identifiable.\n"
-        "- Do not attach a new task to a previous project unless the user explicitly says project X, "
-        "same project, that project, or current project.\n"
+        "- Do not attach a new task to an old conversation project unless the user explicitly refers to it.\n"
         "- If the user names a person without an email, use person_names with an empty person_emails list.\n"
-        "- When a message needs several steps, return several actions in order, for example upsert_person "
-        "then create_task then send_email.\n"
+        "- When a message needs several steps, return several actions in order: upsert_person, then project-bearing "
+        "action, then task/email/reminder actions.\n"
         "- Use related_task_id only from the platform context when updating/completing/emailing an existing task.\n"
-        "- Ask for missing_fields instead of guessing when multiple people/tasks/projects could match."
+        "- Ask for missing_fields instead of guessing when multiple people/tasks/projects could match.\n"
+        "- Never let previous conversation memory override a newly named person in the latest message."
     )
+
+
+def _compact_label(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = " ".join(value.split()).strip(" .,-:;\"'")
+    return cleaned or None
 
 
 def _normalize_planned_actions(state: AssistantState, actions: list[ExtractedAction]) -> list[ExtractedAction]:
@@ -619,16 +630,15 @@ def _normalize_planned_actions(state: AssistantState, actions: list[ExtractedAct
     normalized: list[ExtractedAction] = []
     for action in actions:
         if action.action_type == "create_task":
-            title = _clean_label(action.title or _task_title(state["message"].text or ""))
-            project_name = action.project_name if state.get("explicit_project_reference") else None
-            project_id = action.project_id if state.get("explicit_project_reference") else None
+            title = _compact_label(action.title) or fallback_primary.title or _task_title(state["message"].text or "")
+            project_name = _compact_label(action.project_name)
             normalized.append(
                 action.model_copy(
-                    update={"title": title[:255] or fallback_primary.title, "project_name": project_name, "project_id": project_id}
+                    update={"title": title[:255], "project_name": project_name, "project_id": action.project_id}
                 )
             )
         else:
-            normalized.append(action)
+            normalized.append(action.model_copy(update={"title": _compact_label(action.title), "project_name": _compact_label(action.project_name)}))
     return normalized or fallback_actions
 
 
@@ -641,8 +651,6 @@ async def load_context(state: AssistantState) -> AssistantState:
     state["last_task"] = last_task
     text = message.text or ""
     people = _find_referenced_people(db, text, last_person)
-    if not people and last_person is not None:
-        people = [last_person]
     tasks = _find_referenced_tasks(db, text, people, last_task)
     project_name = _extract_project_name(text)
     explicit_project_reference = _has_explicit_project_reference(text)
