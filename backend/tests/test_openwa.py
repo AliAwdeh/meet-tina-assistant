@@ -267,7 +267,9 @@ def test_openwa_can_move_task_between_projects_and_change_priority(client: TestC
     }
     move_response = client.post("/webhooks/openwa?token=test-openwa", json=move)
     assert move_response.status_code == 200
-    assert "updated" in move_response.json()["reply"].lower()
+    move_reply = move_response.json()["reply"]
+    assert "Updated task" in move_reply
+    assert "project Client Portal -> Mobile App" in move_reply
 
     priority = {
         "event": "message.received",
@@ -282,7 +284,9 @@ def test_openwa_can_move_task_between_projects_and_change_priority(client: TestC
     }
     priority_response = client.post("/webhooks/openwa?token=test-openwa", json=priority)
     assert priority_response.status_code == 200
-    assert "updated" in priority_response.json()["reply"].lower()
+    priority_reply = priority_response.json()["reply"]
+    assert "Updated task" in priority_reply
+    assert "priority medium -> low" in priority_reply
 
     with SessionLocal() as db:
         lina = db.scalar(select(Person).where(Person.email == "lina@example.com"))

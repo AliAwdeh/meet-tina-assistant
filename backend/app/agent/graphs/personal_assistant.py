@@ -46,6 +46,7 @@ class AssistantState(TypedDict, total=False):
     recent_messages: list[Message]
     read_result: str | None
     tool_errors: list[str]
+    action_summaries: list[str]
     reply: str
 
 
@@ -588,6 +589,7 @@ def _planner_system_prompt() -> str:
         "Allowed action_type values: upsert_person, create_task, update_task, complete_task, create_reminder, "
         "send_email, query_records, no_action.\n"
         "Rules:\n"
+        "- Pick concrete actions from the action contract; do not answer with future-tense promises when tools can act now.\n"
         "- Decide from meaning, not from brittle phrase templates. Names, projects, and task titles may appear in any order.\n"
         "- If the user asks to create/add/make/open a new task, plan create_task, not update_task.\n"
         "- A task title is the work to be done, not the command text around it. For example, in "
@@ -601,7 +603,8 @@ def _planner_system_prompt() -> str:
         "action, then task/email/reminder actions.\n"
         "- Use related_task_id only from the platform context when updating/completing/emailing an existing task.\n"
         "- Ask for missing_fields instead of guessing when multiple people/tasks/projects could match.\n"
-        "- Never let previous conversation memory override a newly named person in the latest message."
+        "- Never let previous conversation memory override a newly named person in the latest message.\n"
+        "- If planning update_task, include the fields to change: priority, project_name/project_id, title, due_at, or target_text."
     )
 
 
@@ -638,7 +641,9 @@ def _normalize_planned_actions(state: AssistantState, actions: list[ExtractedAct
                 )
             )
         else:
-            normalized.append(action.model_copy(update={"title": _compact_label(action.title), "project_name": _compact_label(action.project_name)}))
+            normalized.append(
+                action.model_copy(update={"title": _compact_label(action.title), "project_name": _compact_label(action.project_name)})
+            )
     return normalized or fallback_actions
 
 
@@ -678,6 +683,7 @@ async def load_context(state: AssistantState) -> AssistantState:
         else []
     )
     state["tool_errors"] = []
+    state["action_summaries"] = []
     state["read_result"] = None
     return state
 
@@ -818,6 +824,29 @@ def _format_task(db: Session, task: Task) -> str:
     project_label = f" [{project.name}]" if project else ""
     due = f", due {task.due_date.date().isoformat()}" if task.due_date else ""
     return f"{project_label} {task.title}{assignee} ({task.priority}, {task.status}{due})".strip()
+
+
+def _task_context_label(db: Session, task: Task) -> str:
+    parts: list[str] = []
+    person = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
+    project = db.get(Project, task.project_id) if task.project_id else None
+    if person is not None:
+        parts.append(f"for {person.full_name}")
+    if project is not None:
+        parts.append(f"in {project.name}")
+    parts.append(f"priority {task.priority}")
+    return ", ".join(parts)
+
+
+def _project_name(db: Session, project_id: str | None) -> str:
+    if not project_id:
+        return "No project"
+    project = db.get(Project, project_id)
+    return project.name if project else "Unknown project"
+
+
+def _append_action_summary(state: AssistantState, summary: str) -> None:
+    state["action_summaries"] = state.get("action_summaries", []) + [summary]
 
 
 def _person_for_action(action: ExtractedAction, people: list[Person]) -> Person | None:
@@ -1031,6 +1060,14 @@ async def task_agent(state: AssistantState) -> AssistantState:
             state["referenced_tasks"] = [task] if task is not None else []
             state["referenced_project"] = project
             _remember(conversation, person=assignee, task=task, project=project)
+            if task is not None:
+                if assignee is not None:
+                    _append_action_summary(
+                        state,
+                        f"I saved task for {assignee.full_name}: \"{task.title}\" ({_task_context_label(db, task)}).",
+                    )
+                else:
+                    _append_action_summary(state, f"I saved task \"{task.title}\" ({_task_context_label(db, task)}).")
         elif action.action_type == "update_task":
             task = db.get(Task, action.related_task_id) if action.related_task_id else None
             if task is None and state.get("referenced_tasks"):
@@ -1040,6 +1077,7 @@ async def task_agent(state: AssistantState) -> AssistantState:
             else:
                 old_priority = task.priority
                 old_project_id = task.project_id
+                changes: list[str] = []
                 people = state.get("referenced_people", [])
                 project = state.get("referenced_project")
                 if action.project_name:
@@ -1050,6 +1088,10 @@ async def task_agent(state: AssistantState) -> AssistantState:
                         state["referenced_project"] = project
                 if action.priority:
                     task.priority = action.priority
+                if old_project_id != task.project_id:
+                    changes.append(f"project {_project_name(db, old_project_id)} -> {_project_name(db, task.project_id)}")
+                if old_priority != task.priority:
+                    changes.append(f"priority {old_priority} -> {task.priority}")
                 await _send_task_change_email(
                     db,
                     state["settings"],
@@ -1062,6 +1104,8 @@ async def task_agent(state: AssistantState) -> AssistantState:
                 state["last_task"] = task
                 state["referenced_tasks"] = [task]
                 _remember(conversation, person=people[0] if people else None, task=task, project=project)
+                detail = "; ".join(changes) if changes else "no field changed"
+                _append_action_summary(state, f"Updated task \"{task.title}\": {detail}.")
         elif action.action_type == "complete_task":
             task = db.get(Task, action.related_task_id) if action.related_task_id else None
             if task is None and state.get("referenced_tasks"):
@@ -1074,6 +1118,7 @@ async def task_agent(state: AssistantState) -> AssistantState:
                 persisted.append(task.id)
                 state["last_task"] = task
                 _remember(conversation, task=task)
+                _append_action_summary(state, f"I marked task \"{task.title}\" completed.")
     state["persisted_entity_ids"] = persisted
     return state
 
@@ -1206,6 +1251,8 @@ async def generate_reply(state: AssistantState) -> AssistantState:
             state["reply"] = action.missing_fields[0].rstrip(".?") + "?"
         else:
             state["reply"] = "I can help with that, but I need one detail: " + ", ".join(action.missing_fields) + "."
+    elif state.get("action_summaries"):
+        state["reply"] = "Done. " + " ".join(state["action_summaries"])
     elif action.action_type == "create_task" and state.get("persisted_entity_ids"):
         person = state.get("last_person")
         state["reply"] = f"Done. I saved that as a task for {person.full_name}." if person else "Done. I saved that as a task."
