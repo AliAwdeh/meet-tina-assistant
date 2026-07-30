@@ -626,6 +626,8 @@ def _planner_system_prompt() -> str:
         "- If the user asks to create/add/make/open a new task, plan create_task, not update_task.\n"
         "- For new tasks, person assignment is primary. Put the person in person_names; do not use a project as a stand-in for the assignee.\n"
         "- Leave project_name/project_id empty on create_task unless the latest message explicitly names a project or says same/that/current project.\n"
+        "- If Sami asks for a task for a person without naming a project, create it for the person now; the reply will list available projects as optional choices.\n"
+        "- If Sami asks you to choose/list available projects before placing the task, use query_records or ask one project-selection question instead of guessing.\n"
         "- A task title is the work to be done, not the command text around it. For example, in "
         "'create a new task for Ali called Travel Assist', person_names is ['Ali'] and title is 'Travel Assist'.\n"
         "- If the user creates a person and then says he/she/they in the same message, bind the pronoun to that newly named person.\n"
@@ -803,7 +805,7 @@ def _prompt_with_context(state: AssistantState) -> str:
         "Available platform actions:",
         "- create/update people",
         "- create/update projects owned by people",
-        "- create/update/move/complete tasks under projects",
+        "- create/update/move/complete tasks assigned to people and optionally attached to projects",
         "- change task priority between low, medium, high, urgent",
         "- send task-related emails through n8n",
         "- read back people, projects, tasks, meetings, reminders, and email status",
@@ -905,6 +907,23 @@ def _project_name(db: Session, project_id: str | None) -> str:
         return "No project"
     project = db.get(Project, project_id)
     return project.name if project else "Unknown project"
+
+
+def _optional_project_choices(db: Session, person: Person | None, task: Task | None) -> str:
+    if person is None or task is None or task.project_id is not None:
+        return ""
+    projects = list(
+        db.scalars(
+            select(Project)
+            .where(Project.person_id == person.id, Project.status != "cancelled")
+            .order_by(Project.updated_at.desc(), Project.name.asc())
+            .limit(5)
+        )
+    )
+    if not projects:
+        return " No project attached."
+    names = ", ".join(project.name for project in projects)
+    return f" No project attached. Available projects for {person.full_name}: {names}."
 
 
 def _append_action_summary(state: AssistantState, summary: str) -> None:
@@ -1135,7 +1154,8 @@ async def task_agent(state: AssistantState) -> AssistantState:
                 if assignee is not None:
                     _append_action_summary(
                         state,
-                        f"I saved task for {assignee.full_name}: \"{task.title}\" ({_task_context_label(db, task)}).",
+                        f"I saved task for {assignee.full_name}: \"{task.title}\" ({_task_context_label(db, task)})."
+                        f"{_optional_project_choices(db, assignee, task)}",
                     )
                 else:
                     _append_action_summary(state, f"I saved task \"{task.title}\" ({_task_context_label(db, task)}).")

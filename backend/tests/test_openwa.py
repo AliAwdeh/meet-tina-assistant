@@ -300,7 +300,8 @@ def test_openwa_new_person_task_does_not_reuse_old_project(client: TestClient, m
     response = client.post("/webhooks/openwa?token=test-openwa", json=event)
     assert response.status_code == 200
     assert "task for Ali Awdeh" in response.json()["reply"]
-    assert "Old Context Project" not in response.json()["reply"]
+    assert "No project attached" in response.json()["reply"]
+    assert "Available projects for Ali Awdeh: Old Context Project" in response.json()["reply"]
 
     with SessionLocal() as db:
         ali = db.scalar(select(Person).where(Person.email == "ali@example.com"))
