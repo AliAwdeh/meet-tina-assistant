@@ -758,6 +758,31 @@ def _format_task(db: Session, task: Task) -> str:
     return f"{project_label} {task.title}{assignee} ({task.priority}, {task.status}{due})".strip()
 
 
+def _person_for_action(action: ExtractedAction, people: list[Person]) -> Person | None:
+    names = {name.lower() for name in action.person_names}
+    emails = {email.lower() for email in action.person_emails}
+    for person in people:
+        if person.full_name.lower() in names:
+            return person
+        if person.email and person.email.lower() in emails:
+            return person
+    return people[0] if people else None
+
+
+def _matching_person_from_context(people: list[Person], name: str | None, email: str | None) -> Person | None:
+    lowered_name = (name or "").lower().strip()
+    lowered_email = (email or "").lower().strip()
+    for person in people:
+        if lowered_email and person.email and person.email.lower() == lowered_email:
+            return person
+        if lowered_name and (
+            person.full_name.lower() == lowered_name
+            or lowered_name in {part.lower() for part in person.full_name.split()}
+        ):
+            return person
+    return None
+
+
 async def _send_task_change_email(
     db: Session,
     settings: Settings,
@@ -873,28 +898,36 @@ async def people_agent(state: AssistantState) -> AssistantState:
     people = list(state.get("referenced_people", []))
     seen = {person.id for person in people}
     for action in actions:
+        action_people: list[Person] = []
         for name, email in zip_longest(action.person_names or [], action.person_emails or [], fillvalue=None):
             if not name and not email:
                 continue
-            person = _upsert_person(db, PersonCreate(full_name=name or _name_from_email(str(email)), email=email))
+            person = _matching_person_from_context(people, name, email)
+            if person is None:
+                person = _upsert_person(db, PersonCreate(full_name=name or _name_from_email(str(email)), email=email))
+            action_people.append(person)
             if person.id not in seen:
                 people.append(person)
                 seen.add(person.id)
+        if action_people:
+            action_ids = {person.id for person in action_people}
+            people = action_people + [person for person in people if person.id not in action_ids]
         if people:
             state["referenced_people"] = people
             state["last_person"] = people[0]
             _remember(conversation, person=people[0])
-        if action.project_name and people:
-            project = _upsert_project(db, people[0], action.project_name)
+        owner = action_people[0] if action_people else (people[0] if people else None)
+        if action.project_name and owner is not None:
+            project = _upsert_project(db, owner, action.project_name)
             state["referenced_project"] = project
             _remember(conversation, project=project)
             persisted = state.get("persisted_entity_ids", [])
             if project.id not in persisted:
                 state["persisted_entity_ids"] = persisted + [project.id]
-        if action.action_type == "upsert_person" and people:
+        if action.action_type == "upsert_person" and owner is not None:
             persisted = state.get("persisted_entity_ids", [])
-            if people[0].id not in persisted:
-                state["persisted_entity_ids"] = persisted + [people[0].id]
+            if owner.id not in persisted:
+                state["persisted_entity_ids"] = persisted + [owner.id]
     return state
 
 
@@ -910,9 +943,10 @@ async def task_agent(state: AssistantState) -> AssistantState:
     for action in task_actions:
         if action.action_type == "create_task" and action.title:
             people = state.get("referenced_people", [])
+            assignee = _person_for_action(action, people)
             project = db.get(Project, action.project_id) if action.project_id else None
-            if project is None and action.project_name and people:
-                project = _upsert_project(db, people[0], action.project_name)
+            if project is None and action.project_name and assignee is not None:
+                project = _upsert_project(db, assignee, action.project_name)
             elif project is None and state.get("explicit_project_reference"):
                 project = state.get("referenced_project")
             result = create_task_tool(
@@ -921,7 +955,7 @@ async def task_agent(state: AssistantState) -> AssistantState:
                     title=action.title,
                     description=action.description,
                     priority=action.priority or "medium",
-                    assigned_person_id=people[0].id if people else None,
+                    assigned_person_id=assignee.id if assignee else None,
                     project_id=project.id if project else None,
                     due_date=action.due_at,
                 ),
@@ -934,7 +968,7 @@ async def task_agent(state: AssistantState) -> AssistantState:
             state["last_task"] = task
             state["referenced_tasks"] = [task] if task is not None else []
             state["referenced_project"] = project
-            _remember(conversation, person=people[0] if people else None, task=task, project=project)
+            _remember(conversation, person=assignee, task=task, project=project)
         elif action.action_type == "update_task":
             task = db.get(Task, action.related_task_id) if action.related_task_id else None
             if task is None and state.get("referenced_tasks"):
