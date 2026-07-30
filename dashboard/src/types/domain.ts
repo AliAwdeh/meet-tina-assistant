@@ -28,12 +28,31 @@ export type Person = {
   active: boolean;
 };
 
+export type Project = {
+  id: string;
+  person_id: string;
+  person_name?: string | null;
+  name: string;
+  description?: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Task = {
   id: string;
   title: string;
+  description?: string | null;
   status: string;
   priority: string;
+  assigned_person_id?: string | null;
+  assigned_person_name?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
   due_date?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Meeting = {

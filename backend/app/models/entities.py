@@ -73,6 +73,17 @@ class PersonGoal(Base, TimestampMixin):
     person: Mapped[Person] = relationship()
 
 
+class Project(Base, TimestampMixin):
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    person_id: Mapped[str] = mapped_column(ForeignKey("people.id"), index=True)
+    name: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True, nullable=False)
+    person: Mapped[Person] = relationship()
+
+
 class Meeting(Base, TimestampMixin):
     __tablename__ = "meetings"
 
@@ -97,12 +108,14 @@ class Task(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default="open", index=True, nullable=False)
     priority: Mapped[str] = mapped_column(String(32), default="medium", nullable=False)
     assigned_person_id: Mapped[str | None] = mapped_column(ForeignKey("people.id"), index=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), index=True)
     created_by: Mapped[str | None] = mapped_column(String(64))
     due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     source_message_id: Mapped[str | None] = mapped_column(ForeignKey("messages.id"))
     related_meeting_id: Mapped[str | None] = mapped_column(ForeignKey("meetings.id"))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     assigned_person: Mapped[Person | None] = relationship()
+    project: Mapped[Project | None] = relationship()
 
 
 class MeetingParticipant(Base):

@@ -8,6 +8,7 @@ from app.core.config import get_settings
 from app.core.database import Base, engine
 from app.core.logging import configure_logging
 from app.core.middleware import BodySizeLimitMiddleware, RequestContextMiddleware
+from app.core.schema import ensure_runtime_schema
 
 
 @asynccontextmanager
@@ -15,6 +16,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
+    ensure_runtime_schema(engine)
     yield
 
 

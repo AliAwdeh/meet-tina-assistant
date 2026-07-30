@@ -56,6 +56,8 @@ class ExtractedAction(BaseModel):
     subject: str | None = None
     body: str | None = None
     related_task_id: str | None = None
+    project_name: str | None = None
+    project_id: str | None = None
     query_target: Literal["summary", "people", "tasks", "emails", "meetings", "reminders"] | None = None
     target_text: str | None = None
     due_at: datetime | None = None

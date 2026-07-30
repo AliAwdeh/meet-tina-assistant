@@ -3,8 +3,8 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.entities import Meeting, MeetingParticipant, Person, Reminder, Task
-from app.schemas.domain import MeetingCreate, PersonCreate, ReminderCreate, TaskCreate
+from app.models.entities import Meeting, MeetingParticipant, Person, Project, Reminder, Task
+from app.schemas.domain import MeetingCreate, PersonCreate, ProjectCreate, ReminderCreate, TaskCreate
 
 
 def search_people(db: Session, query: str | None = None, limit: int = 50) -> list[Person]:
@@ -21,10 +21,36 @@ def create_person(db: Session, payload: PersonCreate) -> Person:
     return person
 
 
-def list_tasks(db: Session, status: str | None = None, limit: int = 100) -> list[Task]:
+def list_projects(db: Session, person_id: str | None = None, status: str | None = None, limit: int = 100) -> list[Project]:
+    stmt = select(Project).order_by(Project.created_at.desc()).limit(limit)
+    if person_id:
+        stmt = stmt.where(Project.person_id == person_id)
+    if status:
+        stmt = stmt.where(Project.status == status)
+    return list(db.scalars(stmt))
+
+
+def create_project(db: Session, payload: ProjectCreate) -> Project:
+    project = Project(**payload.model_dump())
+    db.add(project)
+    db.flush()
+    return project
+
+
+def list_tasks(
+    db: Session,
+    status: str | None = None,
+    person_id: str | None = None,
+    project_id: str | None = None,
+    limit: int = 100,
+) -> list[Task]:
     stmt = select(Task).order_by(Task.due_date.asc().nullslast(), Task.created_at.desc()).limit(limit)
     if status:
         stmt = stmt.where(Task.status == status)
+    if person_id:
+        stmt = stmt.where(Task.assigned_person_id == person_id)
+    if project_id:
+        stmt = stmt.where(Task.project_id == project_id)
     return list(db.scalars(stmt))
 
 

@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
-from app.models.entities import Email, EmailRecipient, File, Message, N8nRequest, Person, Task
+from app.models.entities import Email, EmailRecipient, File, Message, N8nRequest, Person, Project, Task
 
 
 def _event(message_id: str = "msg-1") -> dict[str, object]:
@@ -194,6 +194,50 @@ def test_openwa_can_read_and_update_related_records(client: TestClient) -> None:
         task = db.scalar(select(Task).where(Task.assigned_person_id == maya.id))
         assert task is not None
         assert task.status == "completed"
+
+
+def test_openwa_lists_person_tasks_with_projects(client: TestClient) -> None:
+    first = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "project-task",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Sara Nassar email sara@example.com project Website Redesign needs to review homepage copy urgent",
+            "type": "text",
+        },
+    }
+    first_response = client.post("/webhooks/openwa?token=test-openwa", json=first)
+    assert first_response.status_code == 200
+
+    query = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "project-task-query",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "What tasks does Sara have?",
+            "type": "text",
+        },
+    }
+    query_response = client.post("/webhooks/openwa?token=test-openwa", json=query)
+    assert query_response.status_code == 200
+    reply = query_response.json()["reply"]
+    assert "Website Redesign" in reply
+    assert "review homepage copy" in reply
+    assert "urgent" in reply
+
+    with SessionLocal() as db:
+        sara = db.scalar(select(Person).where(Person.email == "sara@example.com"))
+        assert sara is not None
+        project = db.scalar(select(Project).where(Project.person_id == sara.id, Project.name == "Website Redesign"))
+        assert project is not None
+        task = db.scalar(select(Task).where(Task.assigned_person_id == sara.id))
+        assert task is not None
+        assert task.project_id == project.id
+        assert task.priority == "urgent"
 
 
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:

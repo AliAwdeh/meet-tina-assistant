@@ -2,12 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { apiGet, errorMessage, shouldRetry } from "../api/client";
 import { LoadingPanel, Notice } from "../components/ui";
-import type { Meeting, Person, Reminder, Task } from "../types/domain";
+import type { Meeting, Person, Project, Reminder, Task } from "../types/domain";
 
-type DataType = Person | Task | Meeting | Reminder;
+type DataType = Person | Project | Task | Meeting | Reminder;
 
 const endpoints = {
   People: "/api/dashboard/people",
+  Projects: "/api/dashboard/projects",
   Tasks: "/api/dashboard/tasks",
   Meetings: "/api/dashboard/meetings",
   Reminders: "/api/dashboard/reminders"
@@ -15,7 +16,8 @@ const endpoints = {
 
 const columnsByPage: Record<keyof typeof endpoints, string[]> = {
   People: ["full_name", "company", "job_title", "email", "whatsapp_number"],
-  Tasks: ["title", "status", "priority", "due_date", "assigned_person_id"],
+  Projects: ["name", "person_name", "status", "description"],
+  Tasks: ["title", "project_name", "assigned_person_name", "status", "priority", "due_date"],
   Meetings: ["title", "status", "start_time", "timezone", "preparation_status"],
   Reminders: ["title", "status", "trigger_time", "timezone", "delivery_channel"]
 };

@@ -1,4 +1,14 @@
-import { Bell, CalendarDays, CheckSquare, LayoutDashboard, Mail, MessageCircle, Settings as SettingsIcon, Users } from "lucide-react";
+import {
+  Bell,
+  CalendarDays,
+  CheckSquare,
+  FolderKanban,
+  LayoutDashboard,
+  Mail,
+  MessageCircle,
+  Settings as SettingsIcon,
+  Users
+} from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, shouldRetry } from "../api/client";
@@ -8,11 +18,13 @@ import { Login } from "../pages/Login";
 import { Overview } from "../pages/Overview";
 import { Records } from "../pages/Records";
 import { Conversations, Emails, Settings } from "../pages/StaticPages";
+import { TasksBoard } from "../pages/TasksBoard";
 import type { User } from "../types/domain";
 
 const nav = [
   { id: "Overview", icon: LayoutDashboard },
   { id: "People", icon: Users },
+  { id: "Projects", icon: FolderKanban },
   { id: "Tasks", icon: CheckSquare },
   { id: "Meetings", icon: CalendarDays },
   { id: "Reminders", icon: Bell },
@@ -98,7 +110,8 @@ export function App() {
 
 function renderPage(page: Page) {
   if (page === "Overview") return <Overview />;
-  if (page === "People" || page === "Tasks" || page === "Meetings" || page === "Reminders") return <Records title={page} />;
+  if (page === "Tasks") return <TasksBoard />;
+  if (page === "People" || page === "Projects" || page === "Meetings" || page === "Reminders") return <Records title={page} />;
   if (page === "Emails") return <Emails />;
   if (page === "Conversations") return <Conversations />;
   return <Settings />;

@@ -25,11 +25,26 @@ class PersonRead(PersonCreate):
     updated_at: datetime
 
 
+class ProjectCreate(BaseModel):
+    person_id: str
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    status: Literal["active", "paused", "completed", "cancelled"] = "active"
+
+
+class ProjectRead(ProjectCreate):
+    id: str
+    person_name: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     description: str | None = None
     priority: Priority = "medium"
     assigned_person_id: str | None = None
+    project_id: str | None = None
     due_date: datetime | None = None
     related_meeting_id: str | None = None
 
@@ -37,9 +52,15 @@ class TaskCreate(BaseModel):
 class TaskRead(TaskCreate):
     id: str
     status: str
+    assigned_person_name: str | None = None
+    project_name: str | None = None
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class TaskPriorityUpdate(BaseModel):
+    priority: Priority
 
 
 class MeetingCreate(BaseModel):
