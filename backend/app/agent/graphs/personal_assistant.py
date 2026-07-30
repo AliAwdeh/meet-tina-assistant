@@ -132,7 +132,8 @@ def _find_referenced_people(db: Session, text: str, last_person: Person | None =
             if person.id not in seen:
                 found.append(person)
                 seen.add(person.id)
-    if not found and any(word in text.lower().split() for word in ["him", "her", "them", "that"]) and last_person is not None:
+    pronouns = {"he", "him", "she", "her", "they", "them", "that"}
+    if not found and any(word in text.lower().split() for word in pronouns) and last_person is not None:
         found.append(last_person)
     return found[:limit]
 
@@ -586,6 +587,8 @@ async def load_context(state: AssistantState) -> AssistantState:
     state["last_task"] = last_task
     text = message.text or ""
     people = _find_referenced_people(db, text, last_person)
+    if not people and last_person is not None:
+        people = [last_person]
     tasks = _find_referenced_tasks(db, text, people, last_task)
     project_name = _extract_project_name(text)
     explicit_project_reference = _has_explicit_project_reference(text)
@@ -603,8 +606,6 @@ async def load_context(state: AssistantState) -> AssistantState:
                 .limit(10)
             )
         )
-    if not people and last_person is not None:
-        people = [last_person]
     state["referenced_people"] = people
     state["referenced_tasks"] = tasks
     state["referenced_project"] = project
