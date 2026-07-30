@@ -469,6 +469,62 @@ def test_openwa_plural_priority_update_preserves_existing_assignees(client: Test
         assert second.assigned_person_id == naji_id
 
 
+def test_openwa_numeric_project_priority_order_update_sends_project_list(client: TestClient, monkeypatch: Any) -> None:
+    with SessionLocal() as db:
+        ali = Person(full_name="Ali Awdeh", email="ali@example.com")
+        db.add(ali)
+        db.flush()
+        project = Project(person_id=ali.id, name="Ops")
+        db.add(project)
+        db.flush()
+        first = Task(title="First task", assigned_person_id=ali.id, project_id=project.id, priority_order=1)
+        second = Task(title="Second task", assigned_person_id=ali.id, project_id=project.id, priority_order=2)
+        db.add_all([first, second])
+        db.flush()
+        db.add(
+            Conversation(
+                whatsapp_chat_id="102907500351574@lid",
+                contact_phone="102907500351574",
+                state={"last_person_id": ali.id, "last_task_id": second.id, "last_task_ids": [first.id, second.id]},
+            )
+        )
+        db.commit()
+        first_id = first.id
+        second_id = second.id
+
+    _mock_planner(monkeypatch, [{"action_type": "update_task", "related_task_id": second_id, "priority_order": 1, "confidence": 0.95}])
+
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "numeric-priority-order-update",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Make the second task priority 1",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    reply = response.json()["reply"]
+    assert "project order 2 -> 1" in reply
+
+    with SessionLocal() as db:
+        first = db.get(Task, first_id)
+        second = db.get(Task, second_id)
+        assert first is not None
+        assert second is not None
+        assert first.priority_order == 2
+        assert second.priority_order == 1
+        email = db.scalar(select(Email).where(Email.subject == "Task updated: Second task"))
+        assert email is not None
+        assert "Priority order changed from 2 to 1" in email.text_body
+        assert "Current priority list for Ops:" in email.text_body
+        assert "1. Second task (Ali Awdeh)" in email.text_body
+        assert "2. First task (Ali Awdeh)" in email.text_body
+
+
 def test_openwa_update_them_applies_previous_rewritten_titles(client: TestClient, monkeypatch: Any) -> None:
     with SessionLocal() as db:
         ali = Person(full_name="Ali Awdeh", email="ali@example.com")

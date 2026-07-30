@@ -45,6 +45,7 @@ export type Task = {
   description?: string | null;
   status: string;
   priority: string;
+  priority_order?: number | null;
   assigned_person_id?: string | null;
   assigned_person_name?: string | null;
   project_id?: string | null;

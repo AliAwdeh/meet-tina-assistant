@@ -1,24 +1,27 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, CalendarDays, CheckSquare, Edit3, FolderKanban, GripVertical, Plus, Save, Search, UserRound, X } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, CalendarDays, CheckSquare, Edit3, FolderKanban, Plus, Save, Search, UserRound, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { apiGet, apiPost, apiPut, errorMessage, shouldRetry } from "../api/client";
 import { Button, LoadingPanel, Notice, secondaryButtonClass, smallEditButtonClass } from "../components/ui";
 import type { Person, Project, Task } from "../types/domain";
 
 const priorities = [
-  { id: "urgent", label: "Urgent", tone: "border-coral/40 bg-coral/5 text-coral" },
-  { id: "high", label: "High", tone: "border-amber/50 bg-amber/10 text-amber" },
-  { id: "medium", label: "Medium", tone: "border-mint/40 bg-mint/10 text-mint" },
-  { id: "low", label: "Low", tone: "border-stone-300 bg-stone-50 text-stone-600" }
+  { id: "urgent", label: "Urgent", tone: "border-coral/50 bg-coral/10 text-coral" },
+  { id: "high", label: "High", tone: "border-amber/60 bg-amber/10 text-amber" },
+  { id: "medium", label: "Medium", tone: "border-mint/50 bg-mint/10 text-ink" },
+  { id: "low", label: "Low", tone: "border-stone-300 bg-stone-50 text-stone-700" }
 ] as const;
 
-type Priority = (typeof priorities)[number]["id"];
-type DragState = { taskId: string; fromPriority: string; fromPersonId: string | null } | null;
+type ProjectChoice = Project | { id: "none"; name: "No project"; person_id: string; status: "active" };
+
+function taskOrder(task: Task, index: number) {
+  return task.priority_order && task.priority_order > 0 ? task.priority_order : index + 1;
+}
 
 export function TasksBoard() {
   const queryClient = useQueryClient();
-  const [dragged, setDragged] = useState<DragState>(null);
-  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [selectedPersonId, setSelectedPersonId] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
   const [editing, setEditing] = useState<Task | null>(null);
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
@@ -47,86 +50,63 @@ export function TasksBoard() {
       void queryClient.invalidateQueries({ queryKey: ["summary"] });
     }
   });
-  const moveTask = useMutation({
-    mutationFn: ({ taskId, priority, personId }: { taskId: string; priority: Priority; personId: string | null }) =>
-      apiPut<Task>(`/api/dashboard/tasks/${taskId}`, { priority, assigned_person_id: personId }),
+  const reorderTask = useMutation({
+    mutationFn: ({ taskId, priorityOrder }: { taskId: string; priorityOrder: number }) =>
+      apiPut<Task>(`/api/dashboard/tasks/${taskId}`, { priority_order: priorityOrder }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["Tasks"] });
       void queryClient.invalidateQueries({ queryKey: ["summary"] });
     }
   });
 
-  const personGroups = useMemo(() => {
+  const activePeople = useMemo(() => (people.data ?? []).filter((person) => person.active), [people.data]);
+  const effectivePersonId = selectedPersonId || activePeople[0]?.id || "";
+  const selectedPerson = activePeople.find((person) => person.id === effectivePersonId) ?? null;
+  const projectsForPerson = useMemo(
+    () => (projects.data ?? []).filter((project) => project.person_id === effectivePersonId && project.status !== "cancelled"),
+    [effectivePersonId, projects.data]
+  );
+  const projectChoices: ProjectChoice[] = useMemo(
+    () => [
+      ...projectsForPerson.sort((a, b) => a.name.localeCompare(b.name)),
+      { id: "none", name: "No project", person_id: effectivePersonId, status: "active" }
+    ],
+    [effectivePersonId, projectsForPerson]
+  );
+  const effectiveProjectId = projectChoices.some((project) => project.id === selectedProjectId)
+    ? selectedProjectId
+    : projectChoices[0]?.id || "none";
+  const selectedProject = projectChoices.find((project) => project.id === effectiveProjectId) ?? projectChoices[0] ?? null;
+
+  const visibleTasks = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
-    const rows = tasks.data ?? [];
-    const projectLookup = new Map((projects.data ?? []).map((project) => [project.id, project]));
-    const filteredRows = normalizedSearch
-      ? rows.filter((task) => {
-          const project = task.project_id ? projectLookup.get(task.project_id) : null;
-          const haystack = [
-            task.title,
-            task.description,
-            task.status,
-            task.priority,
-            task.assigned_person_name,
-            task.project_name,
-            project?.name,
-            project?.person_name
-          ]
-            .filter(Boolean)
-            .join(" ")
-            .toLowerCase();
-          return normalizedSearch.split(/\s+/).every((term) => haystack.includes(term));
-        })
-      : rows;
-    const groups = new Map<string, { id: string; personId: string | null; name: string; detail?: string | null; tasks: Task[] }>();
-    for (const person of people.data ?? []) {
-      groups.set(person.id, {
-        id: person.id,
-        personId: person.id,
-        name: person.full_name,
-        detail: person.company ?? person.email ?? null,
-        tasks: []
+    return (tasks.data ?? [])
+      .filter((task) => task.assigned_person_id === effectivePersonId)
+      .filter((task) => (effectiveProjectId === "none" ? !task.project_id : task.project_id === effectiveProjectId))
+      .filter((task) => {
+        if (!normalizedSearch) return true;
+        const haystack = [task.title, task.description, task.status, task.priority, task.project_name, task.assigned_person_name]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return normalizedSearch.split(/\s+/).every((term) => haystack.includes(term));
+      })
+      .sort((a, b) => {
+        const orderA = a.priority_order && a.priority_order > 0 ? a.priority_order : 1_000_000;
+        const orderB = b.priority_order && b.priority_order > 0 ? b.priority_order : 1_000_000;
+        if (orderA !== orderB) return orderA - orderB;
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
       });
-    }
-    for (const task of filteredRows) {
-      const key = task.assigned_person_id ?? "none";
-      if (!groups.has(key)) {
-        groups.set(key, {
-          id: key,
-          personId: task.assigned_person_id ?? null,
-          name: task.assigned_person_name ?? "Unassigned",
-          detail: null,
-          tasks: []
-        });
-      }
-      groups.get(key)?.tasks.push(task);
-    }
-    if (!groups.has("none")) groups.set("none", { id: "none", personId: null, name: "Unassigned", tasks: [] });
-    const visibleGroups = Array.from(groups.values()).filter((group) => !normalizedSearch || group.tasks.length > 0);
-    return visibleGroups.sort((a, b) => {
-      if (a.id === "none") return 1;
-      if (b.id === "none") return -1;
-      return a.name.localeCompare(b.name);
-    });
-  }, [people.data, projects.data, search, tasks.data]);
+  }, [effectivePersonId, effectiveProjectId, search, tasks.data]);
 
-  const onDrop = (personId: string | null, priority: Priority) => {
-    if (!dragged || moveTask.isPending) return;
-    if (dragged.fromPriority === priority && dragged.fromPersonId === personId) return;
-    moveTask.mutate({ taskId: dragged.taskId, priority, personId });
-    setDragged(null);
-    setDropTarget(null);
-  };
-
-  if (tasks.isLoading || projects.isLoading || people.isLoading) return <LoadingPanel label="Loading task board" />;
+  if (tasks.isLoading || projects.isLoading || people.isLoading) return <LoadingPanel label="Loading task page" />;
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold">Tasks</h2>
-          <p className="text-sm text-stone-500">Grouped by assigned person</p>
+          <p className="text-sm text-stone-500">Person, project, numbered priority sequence</p>
         </div>
         <Button
           className={secondaryButtonClass}
@@ -139,18 +119,51 @@ export function TasksBoard() {
           New task
         </Button>
       </div>
-      <div className="flex max-w-xl items-center gap-2 border border-stone-300 bg-white px-3 py-2 shadow-sm focus-within:border-ink">
-        <Search className="shrink-0 text-stone-500" size={17} />
-        <input
-          className="h-8 w-full bg-transparent text-sm outline-none"
-          placeholder="Search tasks, projects, or people"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-        />
+
+      <div className="grid gap-3 border-y border-stone-200 bg-white/80 p-4 lg:grid-cols-[minmax(180px,1fr)_minmax(180px,1fr)_minmax(220px,1.2fr)]">
+        <label className="block text-sm font-medium">
+          Person
+          <select
+            className={inputClass}
+            value={effectivePersonId}
+            onChange={(event) => {
+              setSelectedPersonId(event.target.value);
+              setSelectedProjectId("");
+            }}
+          >
+            {activePeople.map((person) => (
+              <option key={person.id} value={person.id}>
+                {person.full_name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block text-sm font-medium">
+          Project
+          <select className={inputClass} value={effectiveProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>
+            {projectChoices.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block text-sm font-medium">
+          Search
+          <span className="mt-1 flex h-10 items-center gap-2 border border-stone-300 bg-white px-3">
+            <Search className="shrink-0 text-stone-500" size={17} />
+            <input
+              className="h-8 w-full bg-transparent text-sm outline-none"
+              placeholder="Task title, status, priority"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </span>
+        </label>
       </div>
 
-      {(tasks.isError || projects.isError || people.isError || saveTask.isError || moveTask.isError) && (
-        <Notice title="Task board needs attention">
+      {(tasks.isError || projects.isError || people.isError || saveTask.isError || reorderTask.isError) && (
+        <Notice title="Task page needs attention">
           {tasks.isError
             ? errorMessage(tasks.error)
             : projects.isError
@@ -159,17 +172,20 @@ export function TasksBoard() {
                 ? errorMessage(people.error)
                 : saveTask.isError
                   ? errorMessage(saveTask.error)
-                  : errorMessage(moveTask.error)}
+                  : errorMessage(reorderTask.error)}
         </Notice>
       )}
 
       {(creating || editing) && (
         <div className="border-y border-stone-200 bg-white/80 p-4">
           <TaskForm
+            key={`${editing?.id ?? "new"}:${effectivePersonId}:${effectiveProjectId}`}
             initial={editing}
             isSaving={saveTask.isPending}
-            people={people.data ?? []}
+            people={activePeople}
             projects={projects.data ?? []}
+            defaultPersonId={effectivePersonId}
+            defaultProjectId={effectiveProjectId === "none" ? "" : effectiveProjectId}
             onCancel={() => {
               setCreating(false);
               setEditing(null);
@@ -179,119 +195,107 @@ export function TasksBoard() {
         </div>
       )}
 
-      {personGroups.length === 0 && (
-        <div className="border-y border-stone-200 bg-white/80 px-4 py-8 text-sm text-stone-500">No tasks match the current search.</div>
-      )}
-
-      {personGroups.map((person) => (
-        <section className="border-y border-stone-200 bg-white/80 py-4" key={person.id}>
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-4">
-            <div className="flex min-w-0 items-center gap-2">
-              <UserRound className="shrink-0 text-mint" size={18} />
-              <h3 className="truncate text-base font-semibold">{person.name}</h3>
+      <section className="border-y border-stone-200 bg-white/80">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-200 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-2">
+            {selectedProject?.id === "none" ? <UserRound className="shrink-0 text-mint" size={18} /> : <FolderKanban className="shrink-0 text-mint" size={18} />}
+            <div className="min-w-0">
+              <h3 className="truncate text-base font-semibold">{selectedProject?.name ?? "No project selected"}</h3>
+              <p className="text-sm text-stone-500">{selectedPerson?.full_name ?? "No person selected"}</p>
             </div>
-            <span className="inline-flex items-center gap-1 text-sm text-stone-500">
-              <CheckSquare size={15} />
-              {person.detail ? `${person.detail} · ${person.tasks.length} tasks` : `${person.tasks.length} tasks`}
-            </span>
           </div>
+          <span className="inline-flex items-center gap-1 text-sm text-stone-500">
+            <CheckSquare size={15} />
+            {visibleTasks.length} tasks
+          </span>
+        </div>
 
-          <div className="grid gap-3 px-4 xl:grid-cols-4">
-            {priorities.map((priority) => {
-              const rows = person.tasks.filter((task) => task.priority === priority.id);
-              const targetKey = `${person.id}:${priority.id}`;
-              const isTarget = dropTarget === targetKey;
-              return (
-                <div
-                  className={`min-h-44 border-2 bg-white transition ${
-                    isTarget ? "border-ink bg-mint/5 shadow-sm" : "border-stone-200"
-                  }`}
-                  key={priority.id}
-                  onDragLeave={() => setDropTarget(null)}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    setDropTarget(targetKey);
-                  }}
-                  onDrop={() => onDrop(person.personId, priority.id)}
-                >
-                  <div className={`flex h-10 items-center justify-between border-b px-3 text-sm font-medium ${priority.tone}`}>
-                    <span>{priority.label}</span>
-                    <span>{rows.length}</span>
-                  </div>
-                  <div className="space-y-2 p-2">
-                    {rows.map((task) => (
-                      <TaskTile
-                        key={task.id}
-                        task={task}
-                        onDragStart={() => setDragged({ taskId: task.id, fromPriority: task.priority, fromPersonId: task.assigned_person_id ?? null })}
-                        onEdit={() => {
-                          setCreating(false);
-                          setEditing(task);
-                        }}
-                      />
-                    ))}
-                    {!rows.length && (
-                      <div className="grid h-20 place-items-center border border-dashed border-stone-300 bg-stone-50 text-xs font-medium text-stone-500">
-                        Assign to {person.name}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+        {visibleTasks.length === 0 ? (
+          <div className="px-4 py-8 text-sm text-stone-500">No tasks in this project.</div>
+        ) : (
+          <div className="divide-y divide-stone-200">
+            {visibleTasks.map((task, index) => (
+              <TaskRow
+                canMoveDown={index < visibleTasks.length - 1 && effectiveProjectId !== "none"}
+                canMoveUp={index > 0 && effectiveProjectId !== "none"}
+                index={index}
+                isMoving={reorderTask.isPending}
+                key={task.id}
+                onEdit={() => {
+                  setCreating(false);
+                  setEditing(task);
+                }}
+                onMoveDown={() => reorderTask.mutate({ taskId: task.id, priorityOrder: index + 2 })}
+                onMoveUp={() => reorderTask.mutate({ taskId: task.id, priorityOrder: index })}
+                task={task}
+              />
+            ))}
           </div>
-        </section>
-      ))}
+        )}
+      </section>
     </div>
   );
 }
 
-function TaskTile({ task, onDragStart, onEdit }: { task: Task; onDragStart: () => void; onEdit: () => void }) {
+function TaskRow({
+  task,
+  index,
+  canMoveUp,
+  canMoveDown,
+  isMoving,
+  onMoveUp,
+  onMoveDown,
+  onEdit
+}: {
+  task: Task;
+  index: number;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  isMoving: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onEdit: () => void;
+}) {
+  const priorityTone = priorities.find((priority) => priority.id === task.priority)?.tone ?? "border-stone-300 bg-stone-50 text-stone-700";
   return (
-    <article
-      className="min-h-28 cursor-grab border border-stone-200 bg-[#fffdf8] p-3 shadow-sm active:cursor-grabbing"
-      draggable
-      onDragStart={onDragStart}
-    >
-      <div className="flex items-start gap-2">
-        <GripVertical className="mt-0.5 shrink-0 text-stone-400" size={16} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
-            <h4 className="line-clamp-2 text-sm font-semibold leading-5">{task.title}</h4>
-            <button
-              className={smallEditButtonClass}
-              onClick={onEdit}
-              title="Edit task"
-            >
-              <Edit3 size={14} />
-              Edit
-            </button>
-          </div>
-          {task.assigned_person_name && (
-            <div className="mt-2 flex items-center gap-1 text-xs text-stone-500">
-              <UserRound size={13} />
-              <span className="truncate">{task.assigned_person_name}</span>
-            </div>
-          )}
-          {task.project_name && (
-            <div className="mt-1 flex items-center gap-1 text-xs text-stone-500">
-              <FolderKanban size={13} />
-              <span className="truncate">{task.project_name}</span>
-            </div>
-          )}
-          {task.due_date && (
-            <div className="mt-1 flex items-center gap-1 text-xs text-stone-500">
-              <CalendarDays size={13} />
-              <span>{new Date(task.due_date).toLocaleDateString()}</span>
-            </div>
-          )}
+    <article className="grid gap-3 px-4 py-3 md:grid-cols-[64px_1fr_auto] md:items-center">
+      <div className="flex h-10 w-14 items-center justify-center border border-ink bg-mint text-sm font-bold text-ink">
+        #{taskOrder(task, index)}
+      </div>
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <h4 className="text-sm font-semibold leading-5">{task.title}</h4>
+          <span className={`inline-flex h-7 items-center border px-2 text-xs font-semibold ${priorityTone}`}>{task.priority}</span>
           {task.status !== "open" && (
-            <div className="mt-2 inline-flex items-center gap-1 border border-stone-200 bg-white px-2 py-0.5 text-xs text-stone-500">
+            <span className="inline-flex h-7 items-center gap-1 border border-stone-200 bg-white px-2 text-xs text-stone-600">
               <AlertCircle size={12} />
               {task.status}
-            </div>
+            </span>
           )}
         </div>
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500">
+          {task.due_date && (
+            <span className="inline-flex items-center gap-1">
+              <CalendarDays size={13} />
+              {new Date(task.due_date).toLocaleDateString()}
+            </span>
+          )}
+          {task.description && <span className="truncate">{task.description}</span>}
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <button className={smallEditButtonClass} disabled={!canMoveUp || isMoving} onClick={onMoveUp} title="Move up" type="button">
+          <ArrowUp size={14} />
+          Up
+        </button>
+        <button className={smallEditButtonClass} disabled={!canMoveDown || isMoving} onClick={onMoveDown} title="Move down" type="button">
+          <ArrowDown size={14} />
+          Down
+        </button>
+        <button className={smallEditButtonClass} onClick={onEdit} title="Edit task" type="button">
+          <Edit3 size={14} />
+          Edit
+        </button>
       </div>
     </article>
   );
@@ -305,6 +309,8 @@ function TaskForm({
   isSaving,
   people,
   projects,
+  defaultPersonId,
+  defaultProjectId,
   onCancel,
   onSave
 }: {
@@ -312,18 +318,22 @@ function TaskForm({
   isSaving: boolean;
   people: Person[];
   projects: Project[];
+  defaultPersonId: string;
+  defaultProjectId: string;
   onCancel: () => void;
   onSave: (payload: Record<string, unknown>) => void;
 }) {
   const [form, setForm] = useState({
     title: initial?.title ?? "",
     description: initial?.description ?? "",
-    assigned_person_id: initial?.assigned_person_id ?? "",
-    project_id: initial?.project_id ?? "",
+    assigned_person_id: initial?.assigned_person_id ?? defaultPersonId,
+    project_id: initial?.project_id ?? defaultProjectId,
     priority: initial?.priority ?? "medium",
+    priority_order: initial?.priority_order ? String(initial.priority_order) : "",
     status: initial?.status ?? "open",
     due_date: initial?.due_date ? initial.due_date.slice(0, 10) : ""
   });
+  const filteredProjects = projects.filter((project) => project.person_id === form.assigned_person_id && project.status !== "cancelled");
   return (
     <form
       className="grid gap-3 md:grid-cols-3"
@@ -335,6 +345,7 @@ function TaskForm({
           assigned_person_id: form.assigned_person_id || null,
           project_id: form.project_id || null,
           priority: form.priority,
+          priority_order: form.priority_order ? Number(form.priority_order) : null,
           status: form.status,
           due_date: form.due_date ? new Date(`${form.due_date}T12:00:00`).toISOString() : null
         });
@@ -345,7 +356,7 @@ function TaskForm({
         <input className={inputClass} required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
       </label>
       <label className="block text-sm font-medium">
-        Priority
+        Label priority
         <select className={inputClass} value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })}>
           {priorities.map((priority) => (
             <option key={priority.id} value={priority.id}>
@@ -356,7 +367,11 @@ function TaskForm({
       </label>
       <label className="block text-sm font-medium">
         Assigned person
-        <select className={inputClass} value={form.assigned_person_id} onChange={(event) => setForm({ ...form, assigned_person_id: event.target.value })}>
+        <select
+          className={inputClass}
+          value={form.assigned_person_id}
+          onChange={(event) => setForm({ ...form, assigned_person_id: event.target.value, project_id: "" })}
+        >
           <option value="">Unassigned</option>
           {people.map((person) => (
             <option key={person.id} value={person.id}>
@@ -366,15 +381,26 @@ function TaskForm({
         </select>
       </label>
       <label className="block text-sm font-medium">
-        Project (optional)
+        Project
         <select className={inputClass} value={form.project_id} onChange={(event) => setForm({ ...form, project_id: event.target.value })}>
           <option value="">No project</option>
-          {projects.map((project) => (
+          {filteredProjects.map((project) => (
             <option key={project.id} value={project.id}>
               {project.name}
             </option>
           ))}
         </select>
+      </label>
+      <label className="block text-sm font-medium">
+        Project order
+        <input
+          className={inputClass}
+          min="1"
+          placeholder="Auto"
+          type="number"
+          value={form.priority_order}
+          onChange={(event) => setForm({ ...form, priority_order: event.target.value })}
+        />
       </label>
       <label className="block text-sm font-medium">
         Status

@@ -63,6 +63,7 @@ class ExtractedAction(BaseModel):
     due_at: datetime | None = None
     meeting_at: datetime | None = None
     priority: Literal["low", "medium", "high", "urgent"] | None = None
+    priority_order: int | None = Field(default=None, ge=1)
     status: Literal["open", "pending", "in_progress", "completed", "cancelled"] | None = None
     confidence: float = Field(ge=0.0, le=1.0, default=0.0)
     missing_fields: list[str] = Field(default_factory=list)

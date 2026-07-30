@@ -63,6 +63,7 @@ class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     description: str | None = None
     priority: Priority = "medium"
+    priority_order: int | None = Field(default=None, ge=1)
     assigned_person_id: str | None = None
     project_id: str | None = None
     due_date: datetime | None = None
@@ -87,6 +88,7 @@ class TaskUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     priority: Priority | None = None
+    priority_order: int | None = Field(default=None, ge=1)
     assigned_person_id: str | None = None
     project_id: str | None = None
     due_date: datetime | None = None

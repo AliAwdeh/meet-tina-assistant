@@ -44,7 +44,7 @@ def list_tasks(
     project_id: str | None = None,
     limit: int = 100,
 ) -> list[Task]:
-    stmt = select(Task).order_by(Task.due_date.asc().nullslast(), Task.created_at.desc()).limit(limit)
+    stmt = select(Task).order_by(Task.priority_order.asc(), Task.due_date.asc().nullslast(), Task.created_at.desc()).limit(limit)
     if status:
         stmt = stmt.where(Task.status == status)
     if person_id:
@@ -55,7 +55,10 @@ def list_tasks(
 
 
 def create_task(db: Session, payload: TaskCreate, created_by: str | None = None) -> Task:
-    task = Task(**payload.model_dump(), created_by=created_by)
+    data = payload.model_dump()
+    if data.get("priority_order") is None:
+        data.pop("priority_order")
+    task = Task(**data, created_by=created_by)
     db.add(task)
     db.flush()
     return task

@@ -9,3 +9,6 @@ def ensure_runtime_schema(engine: Engine) -> None:
         if "project_id" not in task_columns:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE tasks ADD COLUMN project_id VARCHAR(36)"))
+        if "priority_order" not in task_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE tasks ADD COLUMN priority_order INTEGER NOT NULL DEFAULT 0"))

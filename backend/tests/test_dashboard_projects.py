@@ -68,6 +68,54 @@ def test_dashboard_projects_and_priority_change_email(client: TestClient) -> Non
         assert n8n_request is not None
 
 
+def test_dashboard_project_priority_order_email_includes_full_project_list(client: TestClient) -> None:
+    _login(client)
+    person_response = client.post("/api/dashboard/people", json={"full_name": "Priority Owner", "email": "priority@example.com"})
+    assert person_response.status_code == 200
+    person = person_response.json()
+    project_response = client.post("/api/dashboard/projects", json={"person_id": person["id"], "name": "Priority Project"})
+    assert project_response.status_code == 200
+    project = project_response.json()
+
+    first = client.post(
+        "/api/dashboard/tasks",
+        json={"title": "First item", "assigned_person_id": person["id"], "project_id": project["id"], "priority": "medium"},
+    )
+    second = client.post(
+        "/api/dashboard/tasks",
+        json={"title": "Second item", "assigned_person_id": person["id"], "project_id": project["id"], "priority": "medium"},
+    )
+    third = client.post(
+        "/api/dashboard/tasks",
+        json={"title": "Third item", "assigned_person_id": person["id"], "project_id": project["id"], "priority": "medium"},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 200
+    assert first.json()["priority_order"] == 1
+    assert second.json()["priority_order"] == 2
+    assert third.json()["priority_order"] == 3
+
+    reordered = client.put(f"/api/dashboard/tasks/{third.json()['id']}", json={"priority_order": 1})
+    assert reordered.status_code == 200
+    assert reordered.json()["priority_order"] == 1
+
+    with SessionLocal() as db:
+        rows = list(db.scalars(select(Task).where(Task.project_id == project["id"]).order_by(Task.priority_order.asc())))
+        assert [(task.title, task.priority_order) for task in rows] == [
+            ("Third item", 1),
+            ("First item", 2),
+            ("Second item", 3),
+        ]
+        email = db.scalar(select(Email).where(Email.subject == "Task updated: Third item"))
+        assert email is not None
+        assert "Priority order changed from 3 to 1" in email.text_body
+        assert "Current priority list for Priority Project:" in email.text_body
+        assert "1. Third item (Priority Owner)" in email.text_body
+        assert "2. First item (Priority Owner)" in email.text_body
+        assert "3. Second item (Priority Owner)" in email.text_body
+
+
 def test_dashboard_updates_people_projects_and_moves_tasks(client: TestClient) -> None:
     _login(client)
     person_response = client.post("/api/dashboard/people", json={"full_name": "Nour Haddad", "email": "nour@example.com"})

@@ -107,6 +107,7 @@ class Task(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="open", index=True, nullable=False)
     priority: Mapped[str] = mapped_column(String(32), default="medium", nullable=False)
+    priority_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     assigned_person_id: Mapped[str | None] = mapped_column(ForeignKey("people.id"), index=True)
     project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), index=True)
     created_by: Mapped[str | None] = mapped_column(String(64))
