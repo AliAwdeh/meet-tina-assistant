@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, CalendarDays, CheckSquare, FolderKanban, GripVertical, UserRound } from "lucide-react";
+import { AlertCircle, CalendarDays, CheckSquare, Edit3, FolderKanban, GripVertical, Plus, Save, UserRound, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import { apiGet, apiPost, errorMessage, shouldRetry } from "../api/client";
-import { LoadingPanel, Notice } from "../components/ui";
-import type { Project, Task } from "../types/domain";
+import { apiGet, apiPost, apiPut, errorMessage, shouldRetry } from "../api/client";
+import { Button, LoadingPanel, Notice } from "../components/ui";
+import type { Person, Project, Task } from "../types/domain";
 
 const priorities = [
   { id: "urgent", label: "Urgent", tone: "border-coral/40 bg-coral/5 text-coral" },
@@ -13,12 +13,14 @@ const priorities = [
 ] as const;
 
 type Priority = (typeof priorities)[number]["id"];
-type DragState = { taskId: string; fromPriority: string } | null;
+type DragState = { taskId: string; fromPriority: string; fromProjectId: string | null } | null;
 
 export function TasksBoard() {
   const queryClient = useQueryClient();
   const [dragged, setDragged] = useState<DragState>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Task | null>(null);
+  const [creating, setCreating] = useState(false);
   const tasks = useQuery({
     queryKey: ["Tasks"],
     queryFn: () => apiGet<Task[]>("/api/dashboard/tasks"),
@@ -29,9 +31,24 @@ export function TasksBoard() {
     queryFn: () => apiGet<Project[]>("/api/dashboard/projects"),
     retry: shouldRetry
   });
-  const updatePriority = useMutation({
-    mutationFn: ({ taskId, priority }: { taskId: string; priority: Priority }) =>
-      apiPost<Task>(`/api/dashboard/tasks/${taskId}/priority`, { priority }),
+  const people = useQuery({
+    queryKey: ["People"],
+    queryFn: () => apiGet<Person[]>("/api/dashboard/people"),
+    retry: shouldRetry
+  });
+  const saveTask = useMutation({
+    mutationFn: (payload: Record<string, unknown>) =>
+      editing ? apiPut<Task>(`/api/dashboard/tasks/${editing.id}`, payload) : apiPost<Task>("/api/dashboard/tasks", payload),
+    onSuccess: () => {
+      setEditing(null);
+      setCreating(false);
+      void queryClient.invalidateQueries({ queryKey: ["Tasks"] });
+      void queryClient.invalidateQueries({ queryKey: ["summary"] });
+    }
+  });
+  const moveTask = useMutation({
+    mutationFn: ({ taskId, priority, projectId }: { taskId: string; priority: Priority; projectId: string | null }) =>
+      apiPut<Task>(`/api/dashboard/tasks/${taskId}`, { priority, project_id: projectId }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["Tasks"] });
       void queryClient.invalidateQueries({ queryKey: ["summary"] });
@@ -40,21 +57,18 @@ export function TasksBoard() {
 
   const projectGroups = useMemo(() => {
     const rows = tasks.data ?? [];
-    const projectById = new Map((projects.data ?? []).map((project) => [project.id, project]));
-    const groups = new Map<string, { id: string; name: string; owner?: string | null; tasks: Task[] }>();
+    const groups = new Map<string, { id: string; projectId: string | null; name: string; owner?: string | null; tasks: Task[] }>();
+    for (const project of projects.data ?? []) {
+      groups.set(project.id, { id: project.id, projectId: project.id, name: project.name, owner: project.person_name, tasks: [] });
+    }
     for (const task of rows) {
       const key = task.project_id ?? "none";
-      const project = task.project_id ? projectById.get(task.project_id) : undefined;
       if (!groups.has(key)) {
-        groups.set(key, {
-          id: key,
-          name: task.project_name ?? project?.name ?? "No project",
-          owner: project?.person_name,
-          tasks: []
-        });
+        groups.set(key, { id: key, projectId: task.project_id ?? null, name: task.project_name ?? "No project", tasks: [] });
       }
       groups.get(key)?.tasks.push(task);
     }
+    if (!groups.has("none")) groups.set("none", { id: "none", projectId: null, name: "No project", tasks: [] });
     return Array.from(groups.values()).sort((a, b) => {
       if (a.id === "none") return 1;
       if (b.id === "none") return -1;
@@ -62,35 +76,64 @@ export function TasksBoard() {
     });
   }, [projects.data, tasks.data]);
 
-  const onDrop = (priority: Priority) => {
-    if (!dragged || dragged.fromPriority === priority || updatePriority.isPending) return;
-    updatePriority.mutate({ taskId: dragged.taskId, priority });
+  const onDrop = (projectId: string | null, priority: Priority) => {
+    if (!dragged || moveTask.isPending) return;
+    if (dragged.fromPriority === priority && dragged.fromProjectId === projectId) return;
+    moveTask.mutate({ taskId: dragged.taskId, priority, projectId });
     setDragged(null);
     setDropTarget(null);
   };
 
-  if (tasks.isLoading || projects.isLoading) return <LoadingPanel label="Loading task board" />;
+  if (tasks.isLoading || projects.isLoading || people.isLoading) return <LoadingPanel label="Loading task board" />;
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold">Tasks</h2>
-          <p className="text-sm text-stone-500">Grouped by project. Drag a task into another priority lane to notify the related person.</p>
+          <p className="text-sm text-stone-500">Project task board</p>
         </div>
-        <div className="inline-flex h-9 items-center gap-2 border border-stone-200 bg-white px-3 text-sm text-stone-600">
-          <CheckSquare size={16} />
-          {(tasks.data ?? []).length} open records
-        </div>
+        <Button
+          className="bg-white text-ink ring-1 ring-stone-200 hover:bg-stone-100"
+          onClick={() => {
+            setEditing(null);
+            setCreating(true);
+          }}
+        >
+          <Plus size={16} />
+          New task
+        </Button>
       </div>
 
-      {(tasks.isError || projects.isError || updatePriority.isError) && (
+      {(tasks.isError || projects.isError || people.isError || saveTask.isError || moveTask.isError) && (
         <Notice title="Task board needs attention">
-          {tasks.isError ? errorMessage(tasks.error) : projects.isError ? errorMessage(projects.error) : errorMessage(updatePriority.error)}
+          {tasks.isError
+            ? errorMessage(tasks.error)
+            : projects.isError
+              ? errorMessage(projects.error)
+              : people.isError
+                ? errorMessage(people.error)
+                : saveTask.isError
+                  ? errorMessage(saveTask.error)
+                  : errorMessage(moveTask.error)}
         </Notice>
       )}
 
-      {!projectGroups.length && <LoadingPanel label="No tasks yet" />}
+      {(creating || editing) && (
+        <div className="border-y border-stone-200 bg-white/80 p-4">
+          <TaskForm
+            initial={editing}
+            isSaving={saveTask.isPending}
+            people={people.data ?? []}
+            projects={projects.data ?? []}
+            onCancel={() => {
+              setCreating(false);
+              setEditing(null);
+            }}
+            onSave={(payload) => saveTask.mutate(payload)}
+          />
+        </div>
+      )}
 
       {projectGroups.map((project) => (
         <section className="border-y border-stone-200 bg-white/80 py-4" key={project.id}>
@@ -99,18 +142,17 @@ export function TasksBoard() {
               <FolderKanban className="shrink-0 text-mint" size={18} />
               <h3 className="truncate text-base font-semibold">{project.name}</h3>
             </div>
-            {project.owner && (
-              <span className="inline-flex items-center gap-1 text-sm text-stone-500">
-                <UserRound size={15} />
-                {project.owner}
-              </span>
-            )}
+            <span className="inline-flex items-center gap-1 text-sm text-stone-500">
+              {project.owner ? <UserRound size={15} /> : <CheckSquare size={15} />}
+              {project.owner ?? `${project.tasks.length} tasks`}
+            </span>
           </div>
 
           <div className="grid gap-3 px-4 xl:grid-cols-4">
             {priorities.map((priority) => {
               const rows = project.tasks.filter((task) => task.priority === priority.id);
-              const isTarget = dropTarget === `${project.id}:${priority.id}`;
+              const targetKey = `${project.id}:${priority.id}`;
+              const isTarget = dropTarget === targetKey;
               return (
                 <div
                   className={`min-h-44 border bg-white transition ${isTarget ? "border-ink" : "border-stone-200"}`}
@@ -118,9 +160,9 @@ export function TasksBoard() {
                   onDragLeave={() => setDropTarget(null)}
                   onDragOver={(event) => {
                     event.preventDefault();
-                    setDropTarget(`${project.id}:${priority.id}`);
+                    setDropTarget(targetKey);
                   }}
-                  onDrop={() => onDrop(priority.id)}
+                  onDrop={() => onDrop(project.projectId, priority.id)}
                 >
                   <div className={`flex h-10 items-center justify-between border-b px-3 text-sm font-medium ${priority.tone}`}>
                     <span>{priority.label}</span>
@@ -128,9 +170,17 @@ export function TasksBoard() {
                   </div>
                   <div className="space-y-2 p-2">
                     {rows.map((task) => (
-                      <TaskTile key={task.id} task={task} onDragStart={() => setDragged({ taskId: task.id, fromPriority: task.priority })} />
+                      <TaskTile
+                        key={task.id}
+                        task={task}
+                        onDragStart={() => setDragged({ taskId: task.id, fromPriority: task.priority, fromProjectId: task.project_id ?? null })}
+                        onEdit={() => {
+                          setCreating(false);
+                          setEditing(task);
+                        }}
+                      />
                     ))}
-                    {!rows.length && <div className="grid h-20 place-items-center text-xs text-stone-400">Drop here</div>}
+                    {!rows.length && <div className="grid h-20 place-items-center text-xs text-stone-400">Empty</div>}
                   </div>
                 </div>
               );
@@ -142,7 +192,7 @@ export function TasksBoard() {
   );
 }
 
-function TaskTile({ task, onDragStart }: { task: Task; onDragStart: () => void }) {
+function TaskTile({ task, onDragStart, onEdit }: { task: Task; onDragStart: () => void; onEdit: () => void }) {
   return (
     <article
       className="min-h-28 cursor-grab border border-stone-200 bg-[#fffdf8] p-3 shadow-sm active:cursor-grabbing"
@@ -152,7 +202,12 @@ function TaskTile({ task, onDragStart }: { task: Task; onDragStart: () => void }
       <div className="flex items-start gap-2">
         <GripVertical className="mt-0.5 shrink-0 text-stone-400" size={16} />
         <div className="min-w-0 flex-1">
-          <h4 className="line-clamp-2 text-sm font-semibold leading-5">{task.title}</h4>
+          <div className="flex items-start justify-between gap-2">
+            <h4 className="line-clamp-2 text-sm font-semibold leading-5">{task.title}</h4>
+            <button className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-stone-500 hover:bg-stone-100" onClick={onEdit} title="Edit">
+              <Edit3 size={14} />
+            </button>
+          </div>
           {task.assigned_person_name && (
             <div className="mt-2 flex items-center gap-1 text-xs text-stone-500">
               <UserRound size={13} />
@@ -174,5 +229,116 @@ function TaskTile({ task, onDragStart }: { task: Task; onDragStart: () => void }
         </div>
       </div>
     </article>
+  );
+}
+
+const inputClass = "mt-1 h-10 w-full border border-stone-300 bg-white px-3 text-sm outline-none transition focus:border-ink";
+const textareaClass = "mt-1 min-h-20 w-full border border-stone-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-ink";
+
+function TaskForm({
+  initial,
+  isSaving,
+  people,
+  projects,
+  onCancel,
+  onSave
+}: {
+  initial: Task | null;
+  isSaving: boolean;
+  people: Person[];
+  projects: Project[];
+  onCancel: () => void;
+  onSave: (payload: Record<string, unknown>) => void;
+}) {
+  const [form, setForm] = useState({
+    title: initial?.title ?? "",
+    description: initial?.description ?? "",
+    assigned_person_id: initial?.assigned_person_id ?? "",
+    project_id: initial?.project_id ?? "",
+    priority: initial?.priority ?? "medium",
+    status: initial?.status ?? "open",
+    due_date: initial?.due_date ? initial.due_date.slice(0, 10) : ""
+  });
+  return (
+    <form
+      className="grid gap-3 md:grid-cols-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave({
+          title: form.title,
+          description: form.description || null,
+          assigned_person_id: form.assigned_person_id || null,
+          project_id: form.project_id || null,
+          priority: form.priority,
+          status: form.status,
+          due_date: form.due_date ? new Date(`${form.due_date}T12:00:00`).toISOString() : null
+        });
+      }}
+    >
+      <label className="block text-sm font-medium md:col-span-2">
+        Title
+        <input className={inputClass} required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
+      </label>
+      <label className="block text-sm font-medium">
+        Priority
+        <select className={inputClass} value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })}>
+          {priorities.map((priority) => (
+            <option key={priority.id} value={priority.id}>
+              {priority.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block text-sm font-medium">
+        Person
+        <select className={inputClass} value={form.assigned_person_id} onChange={(event) => setForm({ ...form, assigned_person_id: event.target.value })}>
+          <option value="">Unassigned</option>
+          {people.map((person) => (
+            <option key={person.id} value={person.id}>
+              {person.full_name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block text-sm font-medium">
+        Project
+        <select className={inputClass} value={form.project_id} onChange={(event) => setForm({ ...form, project_id: event.target.value })}>
+          <option value="">No project</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block text-sm font-medium">
+        Status
+        <select className={inputClass} value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
+          {["open", "pending", "in_progress", "completed", "cancelled"].map((status) => (
+            <option key={status} value={status}>
+              {status}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block text-sm font-medium">
+        Due date
+        <input className={inputClass} type="date" value={form.due_date} onChange={(event) => setForm({ ...form, due_date: event.target.value })} />
+      </label>
+      <label className="block text-sm font-medium md:col-span-3">
+        Description
+        <textarea className={textareaClass} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+      </label>
+      <div className="flex items-end gap-2 md:col-span-3">
+        <Button disabled={isSaving} type="submit">
+          <Save size={16} />
+          {isSaving ? "Saving" : "Save"}
+        </Button>
+        <Button className="bg-white text-ink ring-1 ring-stone-200 hover:bg-stone-100" disabled={isSaving} onClick={onCancel} type="button">
+          <X size={16} />
+          Cancel
+        </Button>
+      </div>
+    </form>
   );
 }

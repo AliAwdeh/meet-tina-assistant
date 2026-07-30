@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -13,13 +15,16 @@ from app.schemas.domain import (
     MeetingRead,
     PersonCreate,
     PersonRead,
+    PersonUpdate,
     ProjectCreate,
     ProjectRead,
+    ProjectUpdate,
     ReminderCreate,
     ReminderRead,
     TaskCreate,
     TaskPriorityUpdate,
     TaskRead,
+    TaskUpdate,
 )
 from app.services import dashboard as dashboard_service
 from app.services.audit import write_audit
@@ -45,6 +50,24 @@ def create_person(
 ) -> PersonRead:
     person = records.create_person(db, payload)
     write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="create_person", entity_type="person", entity_id=person.id)
+    db.commit()
+    db.refresh(person)
+    return PersonRead.model_validate(person, from_attributes=True)
+
+
+@router.put("/people/{person_id}", response_model=PersonRead)
+def update_person(
+    person_id: str,
+    payload: PersonUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> PersonRead:
+    person = db.get(Person, person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    for field in payload.model_fields_set:
+        setattr(person, field, getattr(payload, field))
+    write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="update_person", entity_type="person", entity_id=person.id)
     db.commit()
     db.refresh(person)
     return PersonRead.model_validate(person, from_attributes=True)
@@ -105,6 +128,26 @@ def create_project(
     return _project_read(db, project)
 
 
+@router.put("/projects/{project_id}", response_model=ProjectRead)
+def update_project(
+    project_id: str,
+    payload: ProjectUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ProjectRead:
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if "person_id" in payload.model_fields_set and payload.person_id and db.get(Person, payload.person_id) is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    for field in payload.model_fields_set:
+        setattr(project, field, getattr(payload, field))
+    write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="update_project", entity_type="project", entity_id=project.id)
+    db.commit()
+    db.refresh(project)
+    return _project_read(db, project)
+
+
 @router.get("/tasks", response_model=list[TaskRead])
 def tasks(
     status: str | None = None,
@@ -132,38 +175,110 @@ def create_task(
     return _task_read(db, task)
 
 
-async def _send_priority_change_email(db: Session, settings: Settings, user: User, task: Task, old_priority: str) -> None:
-    people: list[Person] = []
+def _task_notification_people(db: Session, task: Task, old_project_id: str | None = None) -> list[Person]:
+    people_by_id: dict[str, Person] = {}
     if task.assigned_person_id:
         person = db.get(Person, task.assigned_person_id)
         if person is not None:
-            people.append(person)
-    if not people and task.project_id:
-        project = db.get(Project, task.project_id)
+            people_by_id[person.id] = person
+    for project_id in {task.project_id, old_project_id}:
+        if not project_id:
+            continue
+        project = db.get(Project, project_id)
         project_person = db.get(Person, project.person_id) if project else None
         if project_person is not None:
-            people.append(project_person)
-    if not people:
+            people_by_id[project_person.id] = project_person
+    return list(people_by_id.values())
+
+
+async def _send_task_change_email(
+    db: Session,
+    settings: Settings,
+    user: User,
+    task: Task,
+    *,
+    old_priority: str | None = None,
+    old_project_id: str | None = None,
+) -> None:
+    people = _task_notification_people(db, task, old_project_id=old_project_id)
+    changes: list[str] = []
+    if old_priority is not None and old_priority != task.priority:
+        changes.append(f"Priority changed from {old_priority} to {task.priority}.")
+    if old_project_id != task.project_id:
+        old_project = db.get(Project, old_project_id) if old_project_id else None
+        new_project = db.get(Project, task.project_id) if task.project_id else None
+        old_name = old_project.name if old_project else "No project"
+        new_name = new_project.name if new_project else "No project"
+        changes.append(f"Project changed from {old_name} to {new_name}.")
+    if not people or not changes:
         return
-    project = db.get(Project, task.project_id) if task.project_id else None
-    subject = f"Task priority changed: {task.title}"
-    text_body = (
-        f"The priority for task \"{task.title}\" changed from {old_priority} to {task.priority}."
-        + (f"\n\nProject: {project.name}" if project else "")
+    subject = (
+        f"Task priority changed: {task.title}"
+        if len(changes) == 1 and changes[0].startswith("Priority")
+        else f"Task updated: {task.title}"
     )
     await send_email_tool(
         ToolContext(
             db=db,
             actor_type="dashboard_user",
             actor_id=user.id,
-            request_id=f"priority-change:{task.id}:{task.updated_at.isoformat()}",
+            request_id=f"task-update:{task.id}:{datetime.now(UTC).isoformat()}",
         ),
         settings,
         to_people=people,
         subject=subject,
-        text_body=text_body,
+        text_body=f"The task \"{task.title}\" was updated.\n\n" + "\n".join(changes),
         related_task=task,
     )
+
+
+@router.put("/tasks/{task_id}", response_model=TaskRead)
+async def update_task(
+    task_id: str,
+    payload: TaskUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> TaskRead:
+    task = db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if (
+        "assigned_person_id" in payload.model_fields_set
+        and payload.assigned_person_id
+        and db.get(Person, payload.assigned_person_id) is None
+    ):
+        raise HTTPException(status_code=404, detail="Person not found")
+    if "project_id" in payload.model_fields_set and payload.project_id and db.get(Project, payload.project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    old_priority = task.priority
+    old_project_id = task.project_id
+    for field in payload.model_fields_set:
+        setattr(task, field, getattr(payload, field))
+    if payload.status == "completed" and task.completed_at is None:
+        task.completed_at = datetime.now(UTC)
+    elif payload.status and payload.status != "completed":
+        task.completed_at = None
+    write_audit(
+        db,
+        actor_type="dashboard_user",
+        actor_id=user.id,
+        action="update_task",
+        entity_type="task",
+        entity_id=task.id,
+        safe_metadata={"changed_fields": sorted(payload.model_fields_set)},
+    )
+    await _send_task_change_email(
+        db,
+        settings,
+        user,
+        task,
+        old_priority=old_priority if "priority" in payload.model_fields_set else None,
+        old_project_id=old_project_id,
+    )
+    db.commit()
+    db.refresh(task)
+    return _task_read(db, task)
 
 
 @router.post("/tasks/{task_id}/priority", response_model=TaskRead)
@@ -189,7 +304,7 @@ async def update_task_priority(
         safe_metadata={"old_priority": old_priority, "new_priority": payload.priority},
     )
     if old_priority != payload.priority:
-        await _send_priority_change_email(db, settings, user, task, old_priority)
+        await _send_task_change_email(db, settings, user, task, old_priority=old_priority, old_project_id=task.project_id)
     db.commit()
     db.refresh(task)
     return _task_read(db, task)

@@ -74,7 +74,7 @@ export function App() {
             <p className="text-sm text-stone-500">{me.data.name}</p>
           </div>
           <div className="flex items-center gap-2">
-            <Button>New task</Button>
+            <Button onClick={() => setPage("Tasks")}>New task</Button>
             <Button className="bg-white text-ink ring-1 ring-stone-200 hover:bg-stone-100" disabled={logout.isPending} onClick={() => logout.mutate()}>
               Sign out
             </Button>

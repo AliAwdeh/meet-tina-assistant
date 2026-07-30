@@ -25,6 +25,19 @@ class PersonRead(PersonCreate):
     updated_at: datetime
 
 
+class PersonUpdate(BaseModel):
+    full_name: str | None = Field(default=None, min_length=1, max_length=255)
+    company: str | None = None
+    job_title: str | None = None
+    email: EmailStr | None = None
+    phone_number: str | None = None
+    whatsapp_number: str | None = None
+    notes: str | None = None
+    preferred_language: str | None = None
+    timezone: str | None = None
+    active: bool | None = None
+
+
 class ProjectCreate(BaseModel):
     person_id: str
     name: str = Field(min_length=1, max_length=255)
@@ -37,6 +50,13 @@ class ProjectRead(ProjectCreate):
     person_name: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ProjectUpdate(BaseModel):
+    person_id: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    status: Literal["active", "paused", "completed", "cancelled"] | None = None
 
 
 class TaskCreate(BaseModel):
@@ -61,6 +81,17 @@ class TaskRead(TaskCreate):
 
 class TaskPriorityUpdate(BaseModel):
     priority: Priority
+
+
+class TaskUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    priority: Priority | None = None
+    assigned_person_id: str | None = None
+    project_id: str | None = None
+    due_date: datetime | None = None
+    related_meeting_id: str | None = None
+    status: Literal["open", "pending", "in_progress", "completed", "cancelled"] | None = None
 
 
 class MeetingCreate(BaseModel):

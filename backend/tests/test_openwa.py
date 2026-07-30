@@ -240,6 +240,61 @@ def test_openwa_lists_person_tasks_with_projects(client: TestClient) -> None:
         assert task.priority == "urgent"
 
 
+def test_openwa_can_move_task_between_projects_and_change_priority(client: TestClient) -> None:
+    create = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "project-update-create",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Lina Karam email lina@example.com project Client Portal needs to prepare the onboarding checklist",
+            "type": "text",
+        },
+    }
+    assert client.post("/webhooks/openwa?token=test-openwa", json=create).status_code == 200
+
+    move = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "project-update-move",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Move that task to project Mobile App",
+            "type": "text",
+        },
+    }
+    move_response = client.post("/webhooks/openwa?token=test-openwa", json=move)
+    assert move_response.status_code == 200
+    assert "updated" in move_response.json()["reply"].lower()
+
+    priority = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "project-update-priority",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Make that low priority",
+            "type": "text",
+        },
+    }
+    priority_response = client.post("/webhooks/openwa?token=test-openwa", json=priority)
+    assert priority_response.status_code == 200
+    assert "updated" in priority_response.json()["reply"].lower()
+
+    with SessionLocal() as db:
+        lina = db.scalar(select(Person).where(Person.email == "lina@example.com"))
+        assert lina is not None
+        project = db.scalar(select(Project).where(Project.person_id == lina.id, Project.name == "Mobile App"))
+        assert project is not None
+        task = db.scalar(select(Task).where(Task.assigned_person_id == lina.id))
+        assert task is not None
+        assert task.project_id == project.id
+        assert task.priority == "low"
+
+
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:
     headers = {"X-OpenWA-Token": "test-openwa"}
     first = client.post("/webhooks/openwa", json=_event(), headers=headers)

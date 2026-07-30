@@ -85,7 +85,25 @@ def _upsert_person(db: Session, payload: PersonCreate) -> Person:
 
 
 def _query_tokens(text: str) -> list[str]:
-    ignored = {"send", "email", "task", "tasks"}
+    ignored = {
+        "send",
+        "email",
+        "task",
+        "tasks",
+        "change",
+        "update",
+        "move",
+        "set",
+        "make",
+        "priority",
+        "project",
+        "what",
+        "which",
+        "does",
+        "have",
+        "into",
+        "onto",
+    }
     return [token.lower() for token in re.findall(r"[A-Za-z][A-Za-z'-]{1,}", text) if token.lower() not in ignored]
 
 
@@ -119,7 +137,9 @@ def _find_referenced_tasks(db: Session, text: str, people: list[Person], last_ta
     if not tasks and last_task is not None:
         tasks.append(last_task)
     tokens = [token for token in _query_tokens(text) if len(token) > 3]
-    if tokens and not people:
+    lowered = text.lower()
+    should_filter = not people or any(word in lowered for word in ["change", "update", "move", "set", "make", "mark"])
+    if tokens and should_filter:
         matching = []
         for task in tasks:
             haystack = f"{task.title} {task.description or ''}".lower()
@@ -154,6 +174,21 @@ def _task_title(text: str) -> str:
         title = re.sub(r"\s+", " ", title).strip(" .,-")
         return title[:255] or "WhatsApp task"
     return text.strip()[:255] or "WhatsApp task"
+
+
+def _extract_priority(text: str) -> str | None:
+    lowered = text.lower()
+    if "urgent" in lowered:
+        return "urgent"
+    patterns = {
+        "high": [r"\bhigh priority\b", r"\bpriority\s+high\b", r"\bmake\s+(?:it|that|the task)?\s*high\b", r"\bset\s+.*\bhigh\b"],
+        "medium": [r"\bmedium priority\b", r"\bpriority\s+medium\b", r"\bmake\s+(?:it|that|the task)?\s*medium\b", r"\bset\s+.*\bmedium\b"],
+        "low": [r"\blow priority\b", r"\bpriority\s+low\b", r"\bmake\s+(?:it|that|the task)?\s*low\b", r"\bset\s+.*\blow\b"],
+    }
+    for priority, priority_patterns in patterns.items():
+        if any(re.search(pattern, lowered) for pattern in priority_patterns):
+            return priority
+    return None
 
 
 def _extract_project_name(text: str) -> str | None:
@@ -203,12 +238,14 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
     person_names = [person.full_name for person in extracted_people]
     person_emails = [str(person.email) for person in extracted_people if person.email]
     project_name = _extract_project_name(text)
-    priority = "urgent" if "urgent" in lowered else "high" if "high priority" in lowered else "medium"
+    explicit_priority = _extract_priority(text)
+    priority = explicit_priority or "medium"
+    words = set(re.findall(r"[a-z][a-z'-]*", lowered))
     due_at = None
     if "tomorrow" in lowered:
         due_at = datetime.now(UTC) + timedelta(days=1)
     read_verbs = ("show", "list", "what", "which", "check", "find", "get", "who", "where", "status", "summary")
-    if any(verb in lowered for verb in read_verbs):
+    if words.intersection(read_verbs):
         if any(word in lowered for word in ["task", "tasks", "todo", "to do", "needs to"]):
             return ExtractedAction(action_type="query_records", query_target="tasks", target_text=text, confidence=0.86)
         if any(word in lowered for word in ["person", "people", "contact", "email address", "phone"]) or lowered.startswith("who"):
@@ -232,6 +269,24 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
             target_text=text,
             confidence=0.82,
             missing_fields=[] if related_task_id or state.get("referenced_tasks") else ["task"],
+        )
+    update_words = ["change", "update", "move", "set", "make"]
+    if any(word in lowered for word in update_words) and any(word in lowered for word in task_references + ["priority", "project"]):
+        related_task = (state.get("referenced_tasks") or [None])[0] or last_task
+        missing_fields: list[str] = []
+        if related_task is None:
+            missing_fields.append("task")
+        if explicit_priority is None and project_name is None:
+            missing_fields.append("change")
+        return ExtractedAction(
+            action_type="update_task",
+            title=related_task.title if related_task is not None else None,
+            related_task_id=related_task.id if related_task is not None else None,
+            target_text=text,
+            project_name=project_name,
+            priority=explicit_priority,  # type: ignore[arg-type]
+            confidence=0.83,
+            missing_fields=missing_fields,
         )
     if "send" in lowered and "email" in lowered:
         recipient_email = person_emails or ([last_person.email] if last_person and last_person.email else [])
@@ -341,6 +396,8 @@ async def classify_intent(state: AssistantState) -> AssistantState:
         intent = "create_task"
     elif fallback_action.action_type == "complete_task":
         intent = "complete_task"
+    elif fallback_action.action_type == "update_task":
+        intent = "update_task"
     elif fallback_action.action_type == "send_email":
         intent = "send_email"
     elif fallback_action.action_type == "query_records":
@@ -432,6 +489,49 @@ def _format_task(db: Session, task: Task) -> str:
     return f"{project_label} {task.title}{assignee} ({task.priority}, {task.status}{due})".strip()
 
 
+async def _send_task_change_email(
+    db: Session,
+    settings: Settings,
+    message: NormalizedMessage,
+    task: Task,
+    *,
+    old_priority: str | None = None,
+    old_project_id: str | None = None,
+) -> None:
+    people_by_id: dict[str, Person] = {}
+    if task.assigned_person_id:
+        person = db.get(Person, task.assigned_person_id)
+        if person is not None:
+            people_by_id[person.id] = person
+    for project_id in {task.project_id, old_project_id}:
+        if not project_id:
+            continue
+        project = db.get(Project, project_id)
+        project_person = db.get(Person, project.person_id) if project else None
+        if project_person is not None:
+            people_by_id[project_person.id] = project_person
+    changes: list[str] = []
+    if old_priority is not None and old_priority != task.priority:
+        changes.append(f"Priority changed from {old_priority} to {task.priority}.")
+    if old_project_id != task.project_id:
+        old_project = db.get(Project, old_project_id) if old_project_id else None
+        new_project = db.get(Project, task.project_id) if task.project_id else None
+        changes.append(
+            f"Project changed from {old_project.name if old_project else 'No project'} "
+            f"to {new_project.name if new_project else 'No project'}."
+        )
+    if not people_by_id or not changes:
+        return
+    await send_email_tool(
+        ToolContext(db=db, actor_type="openwa", actor_id=message.sender_phone, request_id=f"task-update:{message.external_message_id}"),
+        settings,
+        to_people=list(people_by_id.values()),
+        subject=f"Task updated: {task.title}",
+        text_body=f"The task \"{task.title}\" was updated.\n\n" + "\n".join(changes),
+        related_task=task,
+    )
+
+
 async def records_agent(state: AssistantState) -> AssistantState:
     action = _first_action(state)
     if action.action_type != "query_records":
@@ -493,7 +593,7 @@ async def records_agent(state: AssistantState) -> AssistantState:
 
 async def people_agent(state: AssistantState) -> AssistantState:
     action = _first_action(state)
-    if action.action_type not in {"upsert_person", "create_task", "send_email"}:
+    if action.action_type not in {"upsert_person", "create_task", "update_task", "send_email"}:
         return state
     db = state["db"]
     conversation = state.get("conversation")
@@ -519,7 +619,7 @@ async def people_agent(state: AssistantState) -> AssistantState:
 
 async def task_agent(state: AssistantState) -> AssistantState:
     action = _first_action(state)
-    if action.action_type not in {"create_task", "complete_task"}:
+    if action.action_type not in {"create_task", "update_task", "complete_task"}:
         return state
     db = state["db"]
     message = state["message"]
@@ -551,6 +651,37 @@ async def task_agent(state: AssistantState) -> AssistantState:
         state["referenced_tasks"] = [task] if task is not None else []
         state["referenced_project"] = project
         _remember(conversation, person=people[0] if people else None, task=task, project=project)
+    elif action.action_type == "update_task":
+        task = db.get(Task, action.related_task_id) if action.related_task_id else None
+        if task is None and state.get("referenced_tasks"):
+            task = state["referenced_tasks"][0]
+        if task is None:
+            state.setdefault("tool_errors", []).append("missing_task")
+        else:
+            old_priority = task.priority
+            old_project_id = task.project_id
+            people = state.get("referenced_people", [])
+            project = state.get("referenced_project")
+            if action.project_name:
+                owner = people[0] if people else db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
+                if owner is not None:
+                    project = _upsert_project(db, owner, action.project_name)
+                    task.project_id = project.id
+                    state["referenced_project"] = project
+            if action.priority:
+                task.priority = action.priority
+            await _send_task_change_email(
+                db,
+                state["settings"],
+                message,
+                task,
+                old_priority=old_priority if action.priority else None,
+                old_project_id=old_project_id,
+            )
+            persisted.append(task.id)
+            state["last_task"] = task
+            state["referenced_tasks"] = [task]
+            _remember(conversation, person=people[0] if people else None, task=task, project=project)
     elif action.action_type == "complete_task":
         task = db.get(Task, action.related_task_id) if action.related_task_id else None
         if task is None and state.get("referenced_tasks"):
@@ -682,6 +813,9 @@ async def generate_reply(state: AssistantState) -> AssistantState:
     elif action.action_type == "complete_task" and state.get("persisted_entity_ids"):
         task = state.get("last_task")
         state["reply"] = f"Done. I marked {task.title} as completed." if task else "Done. I marked the task as completed."
+    elif action.action_type == "update_task" and state.get("persisted_entity_ids"):
+        task = state.get("last_task")
+        state["reply"] = f"Done. I updated {task.title}." if task else "Done. I updated the task."
     elif action.action_type == "upsert_person" and state.get("persisted_entity_ids"):
         person = state.get("last_person")
         state["reply"] = f"Done. I saved {person.full_name}." if person else "Done. I saved the contact."
