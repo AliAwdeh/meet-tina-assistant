@@ -67,6 +67,10 @@ class ExtractedAction(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
 
 
+class ActionPlan(BaseModel):
+    actions: list[ExtractedAction] = Field(default_factory=list)
+
+
 class AgentResult(BaseModel):
     reply: str
     classification: ClassificationResult

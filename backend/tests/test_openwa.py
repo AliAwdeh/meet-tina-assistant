@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
-from app.models.entities import Email, EmailRecipient, File, Message, N8nRequest, Person, Project, Task
+from app.models.entities import Conversation, Email, EmailRecipient, File, Message, N8nRequest, Person, Project, Task
 
 
 def _event(message_id: str = "msg-1") -> dict[str, object]:
@@ -293,6 +293,50 @@ def test_openwa_can_move_task_between_projects_and_change_priority(client: TestC
         assert task is not None
         assert task.project_id == project.id
         assert task.priority == "low"
+
+
+def test_openwa_new_task_called_title_does_not_move_existing_project_context(client: TestClient) -> None:
+    with SessionLocal() as db:
+        ali = Person(full_name="Ali Awdeh", email="ali@example.com")
+        db.add(ali)
+        db.flush()
+        existing_project = Project(person_id=ali.id, name="Existing Project")
+        db.add(existing_project)
+        db.flush()
+        existing_task = Task(title="Existing task", assigned_person_id=ali.id, project_id=existing_project.id)
+        db.add(existing_task)
+        conversation = Conversation(
+            whatsapp_chat_id="102907500351574@lid",
+            contact_phone="102907500351574",
+            state={"last_person_id": ali.id, "last_project_id": existing_project.id, "last_task_id": existing_task.id},
+        )
+        db.add(conversation)
+        db.commit()
+
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "create-called-title",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "create a new task for Ali called Travel Assist",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    assert "saved" in response.json()["reply"].lower()
+
+    with SessionLocal() as db:
+        ali = db.scalar(select(Person).where(Person.email == "ali@example.com"))
+        assert ali is not None
+        tasks = list(db.scalars(select(Task).where(Task.assigned_person_id == ali.id).order_by(Task.created_at.asc())))
+        assert len(tasks) == 2
+        assert tasks[0].title == "Existing task"
+        assert tasks[0].project_id is not None
+        assert tasks[1].title == "Travel Assist"
+        assert tasks[1].project_id is None
 
 
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:

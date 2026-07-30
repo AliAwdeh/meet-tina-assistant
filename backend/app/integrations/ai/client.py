@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from typing import Protocol
 
@@ -56,7 +57,17 @@ async def structured_json(model: ChatOpenAI | None, system: str, user: str, fall
         return fallback
     response = await model.ainvoke([SystemMessage(content=system), HumanMessage(content=user)])
     content = str(response.content)
+    fenced = re.search(r"```(?:json)?\s*(?P<body>.*?)\s*```", content, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        content = fenced.group("body")
     try:
         return json.loads(content)
     except json.JSONDecodeError:
+        start = content.find("{")
+        end = content.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                return json.loads(content[start : end + 1])
+            except json.JSONDecodeError:
+                pass
         return fallback
