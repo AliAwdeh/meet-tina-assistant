@@ -554,6 +554,12 @@ def _normalize_planned_actions(state: AssistantState, actions: list[ExtractedAct
         return fallback_actions
     if fallback_primary.action_type == "create_task" and not any(action.action_type == "create_task" for action in actions):
         return fallback_actions
+    if fallback_primary.action_type == "query_records":
+        planned_query = next((action for action in actions if action.action_type == "query_records"), None)
+        if planned_query is None:
+            return fallback_actions
+        if fallback_primary.query_target and planned_query.query_target != fallback_primary.query_target:
+            return fallback_actions
     normalized: list[ExtractedAction] = []
     for action in actions:
         if action.action_type == "create_task":
