@@ -498,6 +498,59 @@ def test_openwa_explicit_person_overrides_remembered_person_for_new_task(client:
         assert conversation.state["last_person_id"] == naji.id
 
 
+def test_openwa_responsible_for_project_phrase_creates_task_for_explicit_person(client: TestClient) -> None:
+    with SessionLocal() as db:
+        naji = Person(full_name="Naji")
+        db.add(naji)
+        db.flush()
+        naji_project = Project(person_id=naji.id, name="Abu Dhabi Maids")
+        db.add(naji_project)
+        db.flush()
+        naji_task = Task(title="Existing Naji task", assigned_person_id=naji.id, project_id=naji_project.id)
+        db.add(naji_task)
+        db.add(
+            Conversation(
+                whatsapp_chat_id="102907500351574@lid",
+                contact_phone="102907500351574",
+                state={"last_person_id": naji.id, "last_project_id": naji_project.id, "last_task_id": naji_task.id},
+            )
+        )
+        db.commit()
+
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "responsible-for-youssef-project-task",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Create a new person called Youssef who is responsible for Bookers (Maze 80) hiring and Abu Dhabi project.",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    assert "task" in response.json()["reply"].lower()
+    assert "Naji" not in response.json()["reply"]
+
+    with SessionLocal() as db:
+        naji = db.scalar(select(Person).where(Person.full_name == "Naji"))
+        youssef = db.scalar(select(Person).where(Person.full_name == "Youssef"))
+        assert naji is not None
+        assert youssef is not None
+        project = db.scalar(select(Project).where(Project.name == "Abu Dhabi"))
+        assert project is not None
+        assert project.person_id == youssef.id
+        task = db.scalar(select(Task).where(Task.title == "Bookers (Maze 80) hiring"))
+        assert task is not None
+        assert task.assigned_person_id == youssef.id
+        assert task.project_id == project.id
+        assert task.assigned_person_id != naji.id
+        conversation = db.scalar(select(Conversation).where(Conversation.whatsapp_chat_id == "102907500351574@lid"))
+        assert conversation is not None
+        assert conversation.state["last_person_id"] == youssef.id
+
+
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:
     headers = {"X-OpenWA-Token": "test-openwa"}
     first = client.post("/webhooks/openwa", json=_event(), headers=headers)

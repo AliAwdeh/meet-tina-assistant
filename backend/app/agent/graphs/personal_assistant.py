@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 EMAIL_RE = re.compile(r"(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})", re.IGNORECASE)
 
 
+class ResponsibilityParts(TypedDict, total=False):
+    project_name: str
+    task_title: str
+
+
 class AssistantState(TypedDict, total=False):
     settings: Settings
     db: Session
@@ -248,10 +253,10 @@ def _extract_priority(text: str) -> str | None:
 
 def _extract_project_name(text: str) -> str | None:
     patterns = [
-        r"\bproject\s+(?:called|named|titled)\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 &._'-]{1,80})",
-        r"\bproject\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 &._'-]{1,80})",
-        r"\bfor\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 &._'-]{1,80})\s+project\b",
-        r"\bon\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 &._'-]{1,80})\s+project\b",
+        r"\bproject\s+(?:called|named|titled)\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 ()&._'-]{1,100})",
+        r"\bproject\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 ()&._'-]{1,100})",
+        r"\bfor\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 ()&._'-]{1,100})\s+project\b",
+        r"\bon\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 ()&._'-]{1,100})\s+project\b",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -266,6 +271,26 @@ def _extract_project_name(text: str) -> str | None:
         if name:
             return name[:255]
     return None
+
+
+def _extract_responsibility_parts(text: str) -> ResponsibilityParts:
+    match = re.search(
+        r"\bresponsible\s+for\s+(?!(?:the\s+)?project\b)(?P<body>.+?)\s+project\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return {}
+    body = _clean_label(match.group("body"))
+    if not body:
+        return {}
+    if " and " in body.lower():
+        task_title, project_name = re.split(r"\s+and\s+", body, maxsplit=1, flags=re.IGNORECASE)
+        task_title = _clean_label(task_title)
+        project_name = _clean_label(project_name)
+        if task_title and project_name:
+            return {"task_title": task_title[:255], "project_name": project_name[:255]}
+    return {"project_name": body[:255]}
 
 
 def _has_explicit_project_reference(text: str) -> bool:
@@ -309,7 +334,8 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
         if inferred_name not in person_names:
             person_names.append(inferred_name)
     person_emails = [str(person.email) for person in extracted_people if person.email]
-    project_name = _extract_project_name(text)
+    responsibility_parts = _extract_responsibility_parts(text)
+    project_name = responsibility_parts.get("project_name") or _extract_project_name(text)
     explicit_priority = _extract_priority(text)
     priority = explicit_priority or "medium"
     words = set(re.findall(r"[a-z][a-z'-]*", lowered))
@@ -322,9 +348,37 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
         or "needs to" in lowered
         or "follow up" in lowered
         or "follow-up" in lowered
+        or bool(responsibility_parts.get("task_title"))
     )
+    create_record_requested = bool(
+        re.search(r"\b(?:create|add|new|save)\b.*\b(?:person|contact|project|task|todo)\b", lowered)
+        or person_names
+        and project_name
+    )
+    if person_names and project_name and responsibility_parts.get("task_title"):
+        return ExtractedAction(
+            action_type="create_task",
+            title=responsibility_parts["task_title"],
+            description=text,
+            person_names=person_names,
+            person_emails=person_emails,
+            project_name=project_name,
+            due_at=due_at,
+            priority=priority,  # type: ignore[arg-type]
+            confidence=0.82,
+        )
+    if person_names and project_name and not create_task_requested:
+        return ExtractedAction(
+            action_type="upsert_person",
+            title=person_names[0],
+            description=text,
+            person_names=person_names,
+            person_emails=person_emails,
+            project_name=project_name,
+            confidence=0.87,
+        )
     read_verbs = ("show", "list", "what", "which", "check", "find", "get", "who", "where", "status", "summary")
-    if words.intersection(read_verbs):
+    if words.intersection(read_verbs) and not create_record_requested:
         if any(word in lowered for word in ["task", "tasks", "todo", "to do", "needs to"]):
             return ExtractedAction(action_type="query_records", query_target="tasks", target_text=text, confidence=0.86)
         if any(word in lowered for word in ["person", "people", "contact", "email address", "phone"]) or lowered.startswith("who"):
