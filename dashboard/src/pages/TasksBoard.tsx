@@ -94,7 +94,7 @@ export function TasksBoard() {
           <p className="text-sm text-stone-500">Project task board</p>
         </div>
         <Button
-          className="bg-white text-ink ring-1 ring-stone-200 hover:bg-stone-100"
+          className="bg-white text-ink hover:bg-stone-100"
           onClick={() => {
             setEditing(null);
             setCreating(true);
@@ -155,7 +155,9 @@ export function TasksBoard() {
               const isTarget = dropTarget === targetKey;
               return (
                 <div
-                  className={`min-h-44 border bg-white transition ${isTarget ? "border-ink" : "border-stone-200"}`}
+                  className={`min-h-44 border-2 bg-white transition ${
+                    isTarget ? "border-ink bg-mint/5 shadow-sm" : "border-stone-200"
+                  }`}
                   key={priority.id}
                   onDragLeave={() => setDropTarget(null)}
                   onDragOver={(event) => {
@@ -180,7 +182,11 @@ export function TasksBoard() {
                         }}
                       />
                     ))}
-                    {!rows.length && <div className="grid h-20 place-items-center text-xs text-stone-400">Empty</div>}
+                    {!rows.length && (
+                      <div className="grid h-20 place-items-center border border-dashed border-stone-300 bg-stone-50 text-xs font-medium text-stone-500">
+                        Drop task here
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -204,8 +210,13 @@ function TaskTile({ task, onDragStart, onEdit }: { task: Task; onDragStart: () =
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <h4 className="line-clamp-2 text-sm font-semibold leading-5">{task.title}</h4>
-            <button className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-stone-500 hover:bg-stone-100" onClick={onEdit} title="Edit">
+            <button
+              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-stone-300 bg-white px-2 text-xs font-semibold text-ink shadow-sm hover:border-ink hover:bg-stone-100"
+              onClick={onEdit}
+              title="Edit task"
+            >
               <Edit3 size={14} />
+              Edit
             </button>
           </div>
           {task.assigned_person_name && (
@@ -334,7 +345,7 @@ function TaskForm({
           <Save size={16} />
           {isSaving ? "Saving" : "Save"}
         </Button>
-        <Button className="bg-white text-ink ring-1 ring-stone-200 hover:bg-stone-100" disabled={isSaving} onClick={onCancel} type="button">
+        <Button className="bg-white text-ink hover:bg-stone-100" disabled={isSaving} onClick={onCancel} type="button">
           <X size={16} />
           Cancel
         </Button>

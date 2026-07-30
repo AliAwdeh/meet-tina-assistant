@@ -75,7 +75,7 @@ export function App() {
           </div>
           <div className="flex items-center gap-2">
             <Button onClick={() => setPage("Tasks")}>New task</Button>
-            <Button className="bg-white text-ink ring-1 ring-stone-200 hover:bg-stone-100" disabled={logout.isPending} onClick={() => logout.mutate()}>
+            <Button className="bg-white text-ink hover:bg-stone-100" disabled={logout.isPending} onClick={() => logout.mutate()}>
               Sign out
             </Button>
           </div>

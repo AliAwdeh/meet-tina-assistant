@@ -434,7 +434,19 @@ def _prompt_with_context(state: AssistantState) -> str:
     message = state["message"]
     last_person = state.get("last_person")
     last_task = state.get("last_task")
-    lines = ["Latest WhatsApp message:", message.text or ""]
+    lines = [
+        "Available platform actions:",
+        "- create/update people",
+        "- create/update projects owned by people",
+        "- create/update/move/complete tasks under projects",
+        "- change task priority between low, medium, high, urgent",
+        "- send task-related emails through n8n",
+        "- read back people, projects, tasks, meetings, reminders, and email status",
+        "Multiple internal actions may be coordinated for one user message when the fields are clear.",
+        "",
+        "Latest WhatsApp message:",
+        message.text or "",
+    ]
     if last_person is not None:
         lines.append(f"Last related person: {last_person.full_name} <{last_person.email or 'no email'}>")
     if last_task is not None:
@@ -779,6 +791,7 @@ async def _general_conversation_reply(state: AssistantState) -> str:
         "Keep it concise and useful, 1-4 short sentences.\n"
         "If the user only greets you, greet them and offer concrete things you can do.\n"
         "If they ask why something happened, answer directly.\n"
+        "Mention that you can create and update people, projects, tasks, priorities, reminders, meetings, and emails when useful.\n"
         "Do not say an action was saved unless the tool layer already saved it.\n"
         "Do not use the word 'Noted' as the whole reply."
     )

@@ -84,7 +84,7 @@ export function Records({ title }: { title: keyof typeof endpoints }) {
         </div>
         {canEdit && (
           <Button
-            className="bg-white text-ink ring-1 ring-stone-200 hover:bg-stone-100"
+            className="bg-white text-ink hover:bg-stone-100"
             onClick={() => {
               setEditing(null);
               setCreating(true);
@@ -156,9 +156,9 @@ export function Records({ title }: { title: keyof typeof endpoints }) {
                     </td>
                   ))}
                   {canEdit && (
-                    <td className="w-16 px-3 py-2 text-right">
+                    <td className="w-28 px-3 py-2 text-right">
                       <button
-                        className="inline-grid h-8 w-8 place-items-center rounded-md text-stone-500 transition hover:bg-stone-100 hover:text-ink"
+                        className="inline-flex h-9 items-center gap-1 rounded-md border border-stone-300 bg-white px-3 text-sm font-medium text-ink shadow-sm transition hover:border-ink hover:bg-stone-100"
                         onClick={() => {
                           setCreating(false);
                           setEditing(row.original);
@@ -166,6 +166,7 @@ export function Records({ title }: { title: keyof typeof endpoints }) {
                         title="Edit"
                       >
                         <Edit3 size={15} />
+                        Edit
                       </button>
                     </td>
                   )}
@@ -317,7 +318,7 @@ function FormActions({ isSaving, onCancel }: { isSaving: boolean; onCancel: () =
         <Save size={16} />
         {isSaving ? "Saving" : "Save"}
       </Button>
-      <Button className="bg-white text-ink ring-1 ring-stone-200 hover:bg-stone-100" disabled={isSaving} onClick={onCancel} type="button">
+      <Button className="bg-white text-ink hover:bg-stone-100" disabled={isSaving} onClick={onCancel} type="button">
         <X size={16} />
         Cancel
       </Button>
