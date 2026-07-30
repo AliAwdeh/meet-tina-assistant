@@ -193,6 +193,8 @@ def _clean_label(value: str) -> str:
 
 def _task_title(text: str) -> str:
     patterns = [
+        r"\b(?:give|assign|add|create)\s+(?:him|her|them|[A-Za-zÀ-ÿ' -]+)?\s*(?:a\s+)?task"
+        r"(?:\s+(?:of|with)\s+priority\s+(?:urgent|high|medium|low))?\s+to\s+(?P<title>.+)",
         r"\b(?:task|todo)\s+(?:called|named|titled)\s+(?P<title>.+)",
         r"\b(?:create|add|make|open)\s+(?:a\s+)?(?:new\s+)?(?:task|todo)\s+(?:for|to|assigned\s+to)\s+.+?\s+(?:called|named|titled)\s+(?P<title>.+)",
         r"\b(?:create|add|make|open)\s+(?:a\s+)?(?:new\s+)?(?:task|todo)\s+(?:called|named|titled)\s+(?P<title>.+)",
@@ -211,7 +213,7 @@ def _task_title(text: str) -> str:
 
 def _infer_person_names(text: str) -> list[str]:
     patterns = [
-        r"\b(?:person|contact)\s+(?:called|named|titled)\s+(?P<name>.+?)(?:\s+(?:that|who|with|and)\b|[.,;]|$)",
+        r"\b(?:person|contact)\s+(?:called|named|titled)\s+(?P<name>.+?)(?:\s+(?:that|who|with|and|is|has|have|responsible)\b|[.,;]|$)",
         r"\b(?:task|todo)\s+(?:for|to|assigned\s+to)\s+(?P<name>.+?)\s+(?:called|named|titled)\b",
         r"\b(?:create|add|make|open)\s+(?:a\s+)?(?:new\s+)?(?:task|todo)\s+(?:for|to|assigned\s+to)\s+(?P<name>.+?)\s+(?:called|named|titled|needs?\s+to)\b",
         r"\bfor\s+(?P<name>[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' -]{1,60})\s+(?:called|named|titled)\b",
@@ -312,6 +314,13 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
     due_at = None
     if "tomorrow" in lowered:
         due_at = datetime.now(UTC) + timedelta(days=1)
+    create_task_requested = bool(
+        re.search(r"\b(?:create|add|open|give|assign)\b.*\b(?:task|todo)\b", lowered)
+        or re.search(r"\bmake\s+(?:a\s+)?new\s+(?:task|todo)\b", lowered)
+        or "needs to" in lowered
+        or "follow up" in lowered
+        or "follow-up" in lowered
+    )
     read_verbs = ("show", "list", "what", "which", "check", "find", "get", "who", "where", "status", "summary")
     if words.intersection(read_verbs):
         if any(word in lowered for word in ["task", "tasks", "todo", "to do", "needs to"]):
@@ -337,6 +346,18 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
             target_text=text,
             confidence=0.82,
             missing_fields=[] if related_task_id or state.get("referenced_tasks") else ["task"],
+        )
+    if create_task_requested:
+        return ExtractedAction(
+            action_type="create_task",
+            title=_task_title(text),
+            description=text,
+            person_names=person_names,
+            person_emails=person_emails,
+            project_name=project_name,
+            due_at=due_at,
+            priority=priority,  # type: ignore[arg-type]
+            confidence=0.76,
         )
     update_words = ["change", "update", "move", "set", "make"]
     if any(word in lowered for word in update_words) and any(word in lowered for word in task_references + ["priority", "project"]):
@@ -411,7 +432,7 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
             confidence=0.72,
             missing_fields=[] if due_at else ["trigger_time"],
         )
-    if any(word in lowered for word in ["task", "finish", "follow up", "follow-up", "needs to"]):
+    if any(word in lowered for word in ["task", "finish"]):
         return ExtractedAction(
             action_type="create_task",
             title=_task_title(text),
@@ -651,6 +672,7 @@ def _prompt_with_context(state: AssistantState) -> str:
     message = state["message"]
     last_person = state.get("last_person")
     last_task = state.get("last_task")
+    recent_messages = list(reversed(state.get("recent_messages", [])))
     lines = [
         "Available platform actions:",
         "- create/update people",
@@ -664,6 +686,13 @@ def _prompt_with_context(state: AssistantState) -> str:
         "Latest WhatsApp message:",
         message.text or "",
     ]
+    if recent_messages:
+        lines.extend(["", "Recent conversation, oldest to newest:"])
+        for recent in recent_messages[-10:]:
+            speaker = "user" if recent.direction == "inbound" else "assistant"
+            text = (recent.text or "").replace("\n", " ").strip()
+            if text:
+                lines.append(f"- {speaker}: {text[:500]}")
     if last_person is not None:
         lines.append(f"Last related person: {last_person.full_name} <{last_person.email or 'no email'}>")
     if last_task is not None:
@@ -1044,7 +1073,7 @@ async def _general_conversation_reply(state: AssistantState) -> str:
         "Do not use the word 'Noted' as the whole reply."
     )
     try:
-        response = await model.ainvoke([SystemMessage(content=prompt), HumanMessage(content=message.text or "")])
+        response = await model.ainvoke([SystemMessage(content=prompt), HumanMessage(content=_prompt_with_context(state))])
     except Exception:
         logger.exception("general_reply_generation_failed", extra={"message_id": message.external_message_id})
         return _fallback_general_reply(message.text or "")
@@ -1066,8 +1095,12 @@ async def generate_reply(state: AssistantState) -> AssistantState:
     elif action.missing_fields:
         if "recipient_email" in action.missing_fields:
             state["reply"] = "Who should I send it to? I need the email address."
-        else:
+        elif "trigger_time" in action.missing_fields or "date" in action.missing_fields or "time" in action.missing_fields:
             state["reply"] = "I can help with that. What date and time should I use?"
+        elif len(action.missing_fields) == 1 and len(action.missing_fields[0]) > 20:
+            state["reply"] = action.missing_fields[0].rstrip(".?") + "?"
+        else:
+            state["reply"] = "I can help with that, but I need one detail: " + ", ".join(action.missing_fields) + "."
     elif action.action_type == "create_task" and state.get("persisted_entity_ids"):
         person = state.get("last_person")
         state["reply"] = f"Done. I saved that as a task for {person.full_name}." if person else "Done. I saved that as a task."

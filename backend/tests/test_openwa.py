@@ -390,6 +390,55 @@ def test_openwa_creates_named_person_project_and_task(client: TestClient) -> Non
         assert task.project_id == project.id
 
 
+def test_openwa_creates_responsible_person_project_task_and_remembers_context(client: TestClient) -> None:
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "responsible-person-project-task",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": (
+                "Create a new person called Nagy is responsible for the project called Abu Dhabi maids, "
+                "and give him a task of priority high to remove his eyeglasses."
+            ),
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    assert "task" in response.json()["reply"].lower()
+
+    follow_up = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "responsible-person-project-task-followup",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "What tasks does he have?",
+            "type": "text",
+        },
+    }
+    follow_up_response = client.post("/webhooks/openwa?token=test-openwa", json=follow_up)
+    assert follow_up_response.status_code == 200
+    follow_up_reply = follow_up_response.json()["reply"]
+    assert "Nagy" in follow_up_reply
+    assert "Abu Dhabi maids" in follow_up_reply
+    assert "remove his eyeglasses" in follow_up_reply
+    assert "high" in follow_up_reply
+
+    with SessionLocal() as db:
+        nagy = db.scalar(select(Person).where(Person.full_name == "Nagy"))
+        assert nagy is not None
+        project = db.scalar(select(Project).where(Project.person_id == nagy.id, Project.name == "Abu Dhabi maids"))
+        assert project is not None
+        task = db.scalar(select(Task).where(Task.assigned_person_id == nagy.id, Task.title == "remove his eyeglasses"))
+        assert task is not None
+        assert task.project_id == project.id
+        assert task.priority == "high"
+
+
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:
     headers = {"X-OpenWA-Token": "test-openwa"}
     first = client.post("/webhooks/openwa", json=_event(), headers=headers)
