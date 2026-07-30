@@ -1,5 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, ArrowDown, ArrowUp, CalendarDays, CheckSquare, Edit3, FolderKanban, Plus, Save, Search, UserRound, X } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowDown,
+  ArrowUp,
+  CalendarDays,
+  CheckSquare,
+  ChevronDown,
+  ChevronRight,
+  Edit3,
+  FolderKanban,
+  Plus,
+  Save,
+  Search,
+  UserRound,
+  X
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { apiGet, apiPost, apiPut, errorMessage, shouldRetry } from "../api/client";
 import { Button, LoadingPanel, Notice, secondaryButtonClass, smallEditButtonClass } from "../components/ui";
@@ -12,18 +27,37 @@ const priorities = [
   { id: "low", label: "Low", tone: "border-stone-300 bg-stone-50 text-stone-700" }
 ] as const;
 
-type ProjectChoice = Project | { id: "none"; name: "No project"; person_id: string; status: "active" };
+type ProjectGroup = {
+  id: string;
+  name: string;
+  personId: string;
+  status: string;
+  tasks: Task[];
+};
+
+type PersonGroup = {
+  person: Person;
+  projects: ProjectGroup[];
+  taskCount: number;
+};
+
+type FormDefaults = { personId: string; projectId: string };
 
 function taskOrder(task: Task, index: number) {
   return task.priority_order && task.priority_order > 0 ? task.priority_order : index + 1;
 }
 
+function groupKey(personId: string, projectId: string) {
+  return `${personId}:${projectId}`;
+}
+
 export function TasksBoard() {
   const queryClient = useQueryClient();
-  const [selectedPersonId, setSelectedPersonId] = useState("");
-  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [collapsedPeople, setCollapsedPeople] = useState<Record<string, boolean>>({});
+  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<Task | null>(null);
   const [creating, setCreating] = useState(false);
+  const [formDefaults, setFormDefaults] = useState<FormDefaults>({ personId: "", projectId: "" });
   const [search, setSearch] = useState("");
   const tasks = useQuery({
     queryKey: ["Tasks"],
@@ -59,45 +93,70 @@ export function TasksBoard() {
     }
   });
 
-  const activePeople = useMemo(() => (people.data ?? []).filter((person) => person.active), [people.data]);
-  const effectivePersonId = selectedPersonId || activePeople[0]?.id || "";
-  const selectedPerson = activePeople.find((person) => person.id === effectivePersonId) ?? null;
-  const projectsForPerson = useMemo(
-    () => (projects.data ?? []).filter((project) => project.person_id === effectivePersonId && project.status !== "cancelled"),
-    [effectivePersonId, projects.data]
-  );
-  const projectChoices: ProjectChoice[] = useMemo(
-    () => [
-      ...projectsForPerson.sort((a, b) => a.name.localeCompare(b.name)),
-      { id: "none", name: "No project", person_id: effectivePersonId, status: "active" }
-    ],
-    [effectivePersonId, projectsForPerson]
-  );
-  const effectiveProjectId = projectChoices.some((project) => project.id === selectedProjectId)
-    ? selectedProjectId
-    : projectChoices[0]?.id || "none";
-  const selectedProject = projectChoices.find((project) => project.id === effectiveProjectId) ?? projectChoices[0] ?? null;
-
-  const visibleTasks = useMemo(() => {
+  const groups = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
-    return (tasks.data ?? [])
-      .filter((task) => task.assigned_person_id === effectivePersonId)
-      .filter((task) => (effectiveProjectId === "none" ? !task.project_id : task.project_id === effectiveProjectId))
-      .filter((task) => {
-        if (!normalizedSearch) return true;
-        const haystack = [task.title, task.description, task.status, task.priority, task.project_name, task.assigned_person_name]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        return normalizedSearch.split(/\s+/).every((term) => haystack.includes(term));
+    const activePeople = (people.data ?? []).filter((person) => person.active).sort((a, b) => a.full_name.localeCompare(b.full_name));
+    const allTasks = tasks.data ?? [];
+    return activePeople
+      .map<PersonGroup>((person) => {
+        const personProjects = (projects.data ?? [])
+          .filter((project) => project.person_id === person.id && project.status !== "cancelled")
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const projectGroups: ProjectGroup[] = [
+          ...personProjects.map((project) => ({
+            id: project.id,
+            name: project.name,
+            personId: person.id,
+            status: project.status,
+            tasks: [] as Task[]
+          })),
+          { id: "none", name: "No project", personId: person.id, status: "active", tasks: [] }
+        ];
+        const projectMap = new Map(projectGroups.map((project) => [project.id, project]));
+        for (const task of allTasks) {
+          if (task.assigned_person_id !== person.id) continue;
+          const target = task.project_id && projectMap.has(task.project_id) ? projectMap.get(task.project_id) : projectMap.get("none");
+          target?.tasks.push(task);
+        }
+        for (const project of projectGroups) {
+          project.tasks.sort((a, b) => {
+            const orderA = a.priority_order && a.priority_order > 0 ? a.priority_order : 1_000_000;
+            const orderB = b.priority_order && b.priority_order > 0 ? b.priority_order : 1_000_000;
+            if (orderA !== orderB) return orderA - orderB;
+            return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+          });
+        }
+        const filteredProjects = normalizedSearch
+          ? projectGroups
+              .map((project) => ({
+                ...project,
+                tasks: project.tasks.filter((task) => {
+                  const haystack = [person.full_name, project.name, task.title, task.description, task.status, task.priority]
+                    .filter(Boolean)
+                    .join(" ")
+                    .toLowerCase();
+                  return normalizedSearch.split(/\s+/).every((term) => haystack.includes(term));
+                })
+              }))
+              .filter((project) => project.tasks.length > 0 || project.name.toLowerCase().includes(normalizedSearch))
+          : projectGroups;
+        return {
+          person,
+          projects: filteredProjects,
+          taskCount: projectGroups.reduce((count, project) => count + project.tasks.length, 0)
+        };
       })
-      .sort((a, b) => {
-        const orderA = a.priority_order && a.priority_order > 0 ? a.priority_order : 1_000_000;
-        const orderB = b.priority_order && b.priority_order > 0 ? b.priority_order : 1_000_000;
-        if (orderA !== orderB) return orderA - orderB;
-        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      });
-  }, [effectivePersonId, effectiveProjectId, search, tasks.data]);
+      .filter((group) => !normalizedSearch || group.projects.length > 0 || group.person.full_name.toLowerCase().includes(normalizedSearch));
+  }, [people.data, projects.data, search, tasks.data]);
+
+  const totalProjects = groups.reduce((count, group) => count + group.projects.filter((project) => project.id !== "none").length, 0);
+  const totalTasks = groups.reduce((count, group) => count + group.taskCount, 0);
+
+  const openCreateForm = (defaults: FormDefaults) => {
+    setEditing(null);
+    setFormDefaults(defaults);
+    setCreating(true);
+  };
 
   if (tasks.isLoading || projects.isLoading || people.isLoading) return <LoadingPanel label="Loading task page" />;
 
@@ -106,60 +165,32 @@ export function TasksBoard() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold">Tasks</h2>
-          <p className="text-sm text-stone-500">Person, project, numbered priority sequence</p>
+          <p className="text-sm text-stone-500">People, projects, numbered priority sequence</p>
         </div>
-        <Button
-          className={secondaryButtonClass}
-          onClick={() => {
-            setEditing(null);
-            setCreating(true);
-          }}
-        >
+        <Button className={secondaryButtonClass} onClick={() => openCreateForm({ personId: groups[0]?.person.id ?? "", projectId: "" })}>
           <Plus size={16} />
           New task
         </Button>
       </div>
 
-      <div className="grid gap-3 border-y border-stone-200 bg-white/80 p-4 lg:grid-cols-[minmax(180px,1fr)_minmax(180px,1fr)_minmax(220px,1.2fr)]">
-        <label className="block text-sm font-medium">
-          Person
-          <select
-            className={inputClass}
-            value={effectivePersonId}
-            onChange={(event) => {
-              setSelectedPersonId(event.target.value);
-              setSelectedProjectId("");
-            }}
-          >
-            {activePeople.map((person) => (
-              <option key={person.id} value={person.id}>
-                {person.full_name}
-              </option>
-            ))}
-          </select>
+      <div className="grid gap-3 md:grid-cols-[1fr_auto_auto]">
+        <label className="flex h-11 min-w-0 items-center gap-2 border border-stone-300 bg-white px-3 text-sm shadow-sm focus-within:border-ink">
+          <Search className="shrink-0 text-stone-500" size={17} />
+          <input
+            className="h-9 w-full bg-transparent outline-none"
+            placeholder="Search people, projects, or tasks"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
         </label>
-        <label className="block text-sm font-medium">
-          Project
-          <select className={inputClass} value={effectiveProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>
-            {projectChoices.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="block text-sm font-medium">
-          Search
-          <span className="mt-1 flex h-10 items-center gap-2 border border-stone-300 bg-white px-3">
-            <Search className="shrink-0 text-stone-500" size={17} />
-            <input
-              className="h-8 w-full bg-transparent text-sm outline-none"
-              placeholder="Task title, status, priority"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-          </span>
-        </label>
+        <div className="flex h-11 items-center gap-2 border border-stone-200 bg-white px-3 text-sm text-stone-600">
+          <UserRound className="text-mint" size={16} />
+          {groups.length} people
+        </div>
+        <div className="flex h-11 items-center gap-2 border border-stone-200 bg-white px-3 text-sm text-stone-600">
+          <FolderKanban className="text-mint" size={16} />
+          {totalProjects} projects · {totalTasks} tasks
+        </div>
       </div>
 
       {(tasks.isError || projects.isError || people.isError || saveTask.isError || reorderTask.isError) && (
@@ -179,13 +210,13 @@ export function TasksBoard() {
       {(creating || editing) && (
         <div className="border-y border-stone-200 bg-white/80 p-4">
           <TaskForm
-            key={`${editing?.id ?? "new"}:${effectivePersonId}:${effectiveProjectId}`}
+            key={`${editing?.id ?? "new"}:${formDefaults.personId}:${formDefaults.projectId}`}
             initial={editing}
             isSaving={saveTask.isPending}
-            people={activePeople}
+            people={(people.data ?? []).filter((person) => person.active)}
             projects={projects.data ?? []}
-            defaultPersonId={effectivePersonId}
-            defaultProjectId={effectiveProjectId === "none" ? "" : effectiveProjectId}
+            defaultPersonId={formDefaults.personId}
+            defaultProjectId={formDefaults.projectId}
             onCancel={() => {
               setCreating(false);
               setEditing(null);
@@ -195,44 +226,129 @@ export function TasksBoard() {
         </div>
       )}
 
-      <section className="border-y border-stone-200 bg-white/80">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-200 px-4 py-3">
-          <div className="flex min-w-0 items-center gap-2">
-            {selectedProject?.id === "none" ? <UserRound className="shrink-0 text-mint" size={18} /> : <FolderKanban className="shrink-0 text-mint" size={18} />}
-            <div className="min-w-0">
-              <h3 className="truncate text-base font-semibold">{selectedProject?.name ?? "No project selected"}</h3>
-              <p className="text-sm text-stone-500">{selectedPerson?.full_name ?? "No person selected"}</p>
-            </div>
-          </div>
-          <span className="inline-flex items-center gap-1 text-sm text-stone-500">
-            <CheckSquare size={15} />
-            {visibleTasks.length} tasks
-          </span>
+      {groups.length === 0 ? (
+        <div className="border-y border-stone-200 bg-white/80 px-4 py-8 text-sm text-stone-500">No people or tasks match the current search.</div>
+      ) : (
+        <div className="space-y-4">
+          {groups.map((group) => {
+            const personCollapsed = collapsedPeople[group.person.id] ?? false;
+            return (
+              <section className="overflow-hidden border border-stone-200 bg-white shadow-sm" key={group.person.id}>
+                <button
+                  className="flex w-full items-center justify-between gap-3 bg-[#fbfaf6] px-4 py-4 text-left transition hover:bg-mint/10"
+                  onClick={() => setCollapsedPeople((current) => ({ ...current, [group.person.id]: !personCollapsed }))}
+                  type="button"
+                >
+                  <span className="flex min-w-0 items-center gap-3">
+                    <span className="grid h-10 w-10 shrink-0 place-items-center border border-mint/50 bg-mint/15 text-mint">
+                      <UserRound size={19} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-base font-semibold">{group.person.full_name}</span>
+                      <span className="block truncate text-sm text-stone-500">
+                        {group.person.company || group.person.email || "No company or email"} · {group.taskCount} tasks
+                      </span>
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-3 text-sm text-stone-500">
+                    {group.projects.filter((project) => project.id !== "none").length} projects
+                    {personCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
+                  </span>
+                </button>
+                {!personCollapsed && (
+                  <div className="divide-y divide-stone-200">
+                    {group.projects.map((project) => {
+                      const key = groupKey(group.person.id, project.id);
+                      const projectCollapsed = collapsedProjects[key] ?? false;
+                      return (
+                        <ProjectSection
+                          isCollapsed={projectCollapsed}
+                          isMoving={reorderTask.isPending}
+                          key={key}
+                          onAddTask={() => openCreateForm({ personId: group.person.id, projectId: project.id === "none" ? "" : project.id })}
+                          onEditTask={(task) => {
+                            setCreating(false);
+                            setFormDefaults({ personId: task.assigned_person_id ?? group.person.id, projectId: task.project_id ?? "" });
+                            setEditing(task);
+                          }}
+                          onMoveDown={(task, index) => reorderTask.mutate({ taskId: task.id, priorityOrder: index + 2 })}
+                          onMoveUp={(task, index) => reorderTask.mutate({ taskId: task.id, priorityOrder: index })}
+                          onToggle={() => setCollapsedProjects((current) => ({ ...current, [key]: !projectCollapsed }))}
+                          project={project}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
+      )}
+    </div>
+  );
+}
 
-        {visibleTasks.length === 0 ? (
-          <div className="px-4 py-8 text-sm text-stone-500">No tasks in this project.</div>
-        ) : (
-          <div className="divide-y divide-stone-200">
-            {visibleTasks.map((task, index) => (
-              <TaskRow
-                canMoveDown={index < visibleTasks.length - 1 && effectiveProjectId !== "none"}
-                canMoveUp={index > 0 && effectiveProjectId !== "none"}
-                index={index}
-                isMoving={reorderTask.isPending}
-                key={task.id}
-                onEdit={() => {
-                  setCreating(false);
-                  setEditing(task);
-                }}
-                onMoveDown={() => reorderTask.mutate({ taskId: task.id, priorityOrder: index + 2 })}
-                onMoveUp={() => reorderTask.mutate({ taskId: task.id, priorityOrder: index })}
-                task={task}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+function ProjectSection({
+  project,
+  isCollapsed,
+  isMoving,
+  onToggle,
+  onAddTask,
+  onMoveUp,
+  onMoveDown,
+  onEditTask
+}: {
+  project: ProjectGroup;
+  isCollapsed: boolean;
+  isMoving: boolean;
+  onToggle: () => void;
+  onAddTask: () => void;
+  onMoveUp: (task: Task, index: number) => void;
+  onMoveDown: (task: Task, index: number) => void;
+  onEditTask: (task: Task) => void;
+}) {
+  return (
+    <div className="bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <button className="flex min-w-0 items-center gap-2 text-left" onClick={onToggle} type="button">
+          {isCollapsed ? <ChevronRight className="shrink-0 text-stone-500" size={17} /> : <ChevronDown className="shrink-0 text-stone-500" size={17} />}
+          <FolderKanban className="shrink-0 text-mint" size={18} />
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold">{project.name}</span>
+            <span className="block text-xs text-stone-500">
+              {project.tasks.length} tasks{project.id === "none" ? "" : ` · ${project.status}`}
+            </span>
+          </span>
+        </button>
+        <Button className="h-9 px-3" onClick={onAddTask} type="button">
+          <Plus size={15} />
+          Task
+        </Button>
+      </div>
+      {!isCollapsed && (
+        <div className="border-t border-stone-100">
+          {project.tasks.length === 0 ? (
+            <div className="px-4 py-6 text-sm text-stone-500">No tasks here yet.</div>
+          ) : (
+            <div className="divide-y divide-stone-100">
+              {project.tasks.map((task, index) => (
+                <TaskRow
+                  canMoveDown={index < project.tasks.length - 1 && project.id !== "none"}
+                  canMoveUp={index > 0 && project.id !== "none"}
+                  index={index}
+                  isMoving={isMoving}
+                  key={task.id}
+                  onEdit={() => onEditTask(task)}
+                  onMoveDown={() => onMoveDown(task, index)}
+                  onMoveUp={() => onMoveUp(task, index)}
+                  task={task}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
