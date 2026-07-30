@@ -624,6 +624,8 @@ def _planner_system_prompt() -> str:
         "- Treat the user as Sami, a senior manager. Records describe Sami's people, teams, projects, tasks, and meetings.\n"
         "- Decide from meaning, not from brittle phrase templates. Names, projects, and task titles may appear in any order.\n"
         "- If the user asks to create/add/make/open a new task, plan create_task, not update_task.\n"
+        "- For new tasks, person assignment is primary. Put the person in person_names; do not use a project as a stand-in for the assignee.\n"
+        "- Leave project_name/project_id empty on create_task unless the latest message explicitly names a project or says same/that/current project.\n"
         "- A task title is the work to be done, not the command text around it. For example, in "
         "'create a new task for Ali called Travel Assist', person_names is ['Ali'] and title is 'Travel Assist'.\n"
         "- If the user creates a person and then says he/she/they in the same message, bind the pronoun to that newly named person.\n"
@@ -672,9 +674,13 @@ def _normalize_planned_actions(state: AssistantState, actions: list[ExtractedAct
         if action.action_type == "create_task":
             title = _compact_label(action.title) or fallback_primary.title or _task_title(state["message"].text or "")
             project_name = _compact_label(action.project_name)
+            project_id = action.project_id
+            if not state.get("explicit_project_reference"):
+                project_name = None
+                project_id = None
             normalized.append(
                 action.model_copy(
-                    update={"title": title[:255], "project_name": project_name, "project_id": action.project_id}
+                    update={"title": title[:255], "project_name": project_name, "project_id": project_id}
                 )
             )
         else:

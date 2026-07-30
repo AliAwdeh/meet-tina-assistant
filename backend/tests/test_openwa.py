@@ -255,6 +255,61 @@ def test_openwa_lists_person_tasks_with_projects(client: TestClient) -> None:
         assert task.priority == "urgent"
 
 
+def test_openwa_new_person_task_does_not_reuse_old_project(client: TestClient, monkeypatch: Any) -> None:
+    with SessionLocal() as db:
+        ali = Person(full_name="Ali Awdeh", email="ali@example.com")
+        db.add(ali)
+        db.flush()
+        old_project = Project(person_id=ali.id, name="Old Context Project")
+        db.add(old_project)
+        db.flush()
+        db.add(
+            Conversation(
+                whatsapp_chat_id="102907500351574@lid",
+                contact_phone="102907500351574",
+                state={"last_person_id": ali.id, "last_project_id": old_project.id},
+            )
+        )
+        db.commit()
+        old_project_id = old_project.id
+
+    _mock_planner(
+        monkeypatch,
+        [
+            {
+                "action_type": "create_task",
+                "title": "Travel Assist",
+                "person_names": ["Ali Awdeh"],
+                "project_id": old_project_id,
+                "confidence": 0.95,
+            }
+        ],
+    )
+
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "person-task-no-project-reuse",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Create a new task for Ali called Travel Assist",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    assert "task for Ali Awdeh" in response.json()["reply"]
+    assert "Old Context Project" not in response.json()["reply"]
+
+    with SessionLocal() as db:
+        ali = db.scalar(select(Person).where(Person.email == "ali@example.com"))
+        assert ali is not None
+        task = db.scalar(select(Task).where(Task.assigned_person_id == ali.id, Task.title == "Travel Assist"))
+        assert task is not None
+        assert task.project_id is None
+
+
 def test_openwa_can_move_task_between_projects_and_change_priority(client: TestClient) -> None:
     create = {
         "event": "message.received",

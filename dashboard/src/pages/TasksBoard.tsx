@@ -126,7 +126,7 @@ export function TasksBoard() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold">Tasks</h2>
-          <p className="text-sm text-stone-500">People task board</p>
+          <p className="text-sm text-stone-500">Grouped by assigned person</p>
         </div>
         <Button
           className={secondaryButtonClass}
@@ -232,7 +232,7 @@ export function TasksBoard() {
                     ))}
                     {!rows.length && (
                       <div className="grid h-20 place-items-center border border-dashed border-stone-300 bg-stone-50 text-xs font-medium text-stone-500">
-                        Drop task here
+                        Assign to {person.name}
                       </div>
                     )}
                   </div>
@@ -366,7 +366,7 @@ function TaskForm({
         </select>
       </label>
       <label className="block text-sm font-medium">
-        Project
+        Project (optional)
         <select className={inputClass} value={form.project_id} onChange={(event) => setForm({ ...form, project_id: event.target.value })}>
           <option value="">No project</option>
           {projects.map((project) => (
