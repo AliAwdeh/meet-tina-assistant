@@ -7,12 +7,14 @@ from app.agent.tools.registry import ToolContext, send_email_tool
 from app.auth.dependencies import get_current_user
 from app.core.config import Settings, get_settings
 from app.core.database import get_db
-from app.models.entities import Person, Project, Task, User
+from app.models.entities import AppSetting, Person, Project, Task, User
 from app.repositories import records
 from app.schemas.domain import (
     DashboardSummary,
     MeetingCreate,
     MeetingRead,
+    NotificationSettings,
+    NotificationSettingsRead,
     PersonCreate,
     PersonRead,
     PersonUpdate,
@@ -30,6 +32,49 @@ from app.services import dashboard as dashboard_service
 from app.services.audit import write_audit
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+NOTIFICATION_SETTINGS_KEY = "notification_settings"
+
+
+def _notification_settings(db: Session) -> NotificationSettingsRead:
+    row = db.get(AppSetting, NOTIFICATION_SETTINGS_KEY)
+    value = row.value if row is not None else {}
+    settings = NotificationSettings.model_validate(value)
+    return NotificationSettingsRead(**settings.model_dump())
+
+
+def _task_change_emails_enabled(db: Session) -> bool:
+    return _notification_settings(db).task_change_email_notifications
+
+
+@router.get("/settings/notifications", response_model=NotificationSettingsRead)
+def notification_settings(db: Session = Depends(get_db)) -> NotificationSettingsRead:
+    return _notification_settings(db)
+
+
+@router.put("/settings/notifications", response_model=NotificationSettingsRead)
+def update_notification_settings(
+    payload: NotificationSettings,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> NotificationSettingsRead:
+    row = db.get(AppSetting, NOTIFICATION_SETTINGS_KEY)
+    if row is None:
+        row = AppSetting(key=NOTIFICATION_SETTINGS_KEY, value=payload.model_dump())
+        db.add(row)
+    else:
+        row.value = payload.model_dump()
+    write_audit(
+        db,
+        actor_type="dashboard_user",
+        actor_id=user.id,
+        action="update_notification_settings",
+        entity_type="app_setting",
+        entity_id=NOTIFICATION_SETTINGS_KEY,
+        safe_metadata=payload.model_dump(),
+    )
+    db.commit()
+    return _notification_settings(db)
 
 
 @router.get("/summary", response_model=DashboardSummary)
@@ -175,10 +220,17 @@ def create_task(
     return _task_read(db, task)
 
 
-def _task_notification_people(db: Session, task: Task, old_project_id: str | None = None) -> list[Person]:
+def _task_notification_people(
+    db: Session,
+    task: Task,
+    old_project_id: str | None = None,
+    old_assigned_person_id: str | None = None,
+) -> list[Person]:
     people_by_id: dict[str, Person] = {}
-    if task.assigned_person_id:
-        person = db.get(Person, task.assigned_person_id)
+    for person_id in {task.assigned_person_id, old_assigned_person_id}:
+        if not person_id:
+            continue
+        person = db.get(Person, person_id)
         if person is not None:
             people_by_id[person.id] = person
     for project_id in {task.project_id, old_project_id}:
@@ -197,11 +249,19 @@ async def _send_task_change_email(
     user: User,
     task: Task,
     *,
+    old_title: str | None = None,
     old_priority: str | None = None,
     old_project_id: str | None = None,
+    old_assigned_person_id: str | None = None,
+    old_status: str | None = None,
+    old_due_date: datetime | None = None,
 ) -> None:
-    people = _task_notification_people(db, task, old_project_id=old_project_id)
+    if not _task_change_emails_enabled(db):
+        return
+    people = _task_notification_people(db, task, old_project_id=old_project_id, old_assigned_person_id=old_assigned_person_id)
     changes: list[str] = []
+    if old_title is not None and old_title != task.title:
+        changes.append(f"Title changed from {old_title} to {task.title}.")
     if old_priority is not None and old_priority != task.priority:
         changes.append(f"Priority changed from {old_priority} to {task.priority}.")
     if old_project_id != task.project_id:
@@ -210,6 +270,19 @@ async def _send_task_change_email(
         old_name = old_project.name if old_project else "No project"
         new_name = new_project.name if new_project else "No project"
         changes.append(f"Project changed from {old_name} to {new_name}.")
+    if old_assigned_person_id is not None and old_assigned_person_id != task.assigned_person_id:
+        old_person = db.get(Person, old_assigned_person_id)
+        new_person = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
+        changes.append(
+            f"Assignee changed from {old_person.full_name if old_person else 'none'} "
+            f"to {new_person.full_name if new_person else 'none'}."
+        )
+    if old_status is not None and old_status != task.status:
+        changes.append(f"Status changed from {old_status} to {task.status}.")
+    if old_due_date is not None and old_due_date != task.due_date:
+        old_due = old_due_date.date().isoformat()
+        new_due = task.due_date.date().isoformat() if task.due_date else "none"
+        changes.append(f"Due date changed from {old_due} to {new_due}.")
     if not people or not changes:
         return
     subject = (
@@ -251,8 +324,12 @@ async def update_task(
         raise HTTPException(status_code=404, detail="Person not found")
     if "project_id" in payload.model_fields_set and payload.project_id and db.get(Project, payload.project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    old_title = task.title
     old_priority = task.priority
     old_project_id = task.project_id
+    old_assigned_person_id = task.assigned_person_id
+    old_status = task.status
+    old_due_date = task.due_date
     for field in payload.model_fields_set:
         setattr(task, field, getattr(payload, field))
     if payload.status == "completed" and task.completed_at is None:
@@ -273,8 +350,12 @@ async def update_task(
         settings,
         user,
         task,
+        old_title=old_title if "title" in payload.model_fields_set else None,
         old_priority=old_priority if "priority" in payload.model_fields_set else None,
         old_project_id=old_project_id,
+        old_assigned_person_id=old_assigned_person_id if "assigned_person_id" in payload.model_fields_set else None,
+        old_status=old_status if "status" in payload.model_fields_set else None,
+        old_due_date=old_due_date if "due_date" in payload.model_fields_set else None,
     )
     db.commit()
     db.refresh(task)
@@ -311,15 +392,20 @@ async def update_task_priority(
 
 
 @router.post("/tasks/{task_id}/complete", response_model=TaskRead)
-def complete_task(
+async def complete_task(
     task_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ) -> TaskRead:
+    existing = db.get(Task, task_id)
+    old_status = existing.status if existing is not None else None
+    old_project_id = existing.project_id if existing is not None else None
     task = records.complete_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="complete_task", entity_type="task", entity_id=task.id)
+    await _send_task_change_email(db, settings, user, task, old_project_id=old_project_id, old_status=old_status)
     db.commit()
     db.refresh(task)
     return _task_read(db, task)

@@ -88,7 +88,7 @@ export function App() {
             return (
               <button
                 className={`flex h-10 min-w-fit items-center gap-2 rounded-md px-3 text-sm transition ${
-                  page === item.id ? "bg-ink text-white" : "border border-transparent bg-mint/10 text-stone-700 hover:border-mint/60 hover:bg-mint/20"
+                  page === item.id ? "border border-ink bg-mint text-ink" : "border border-transparent bg-mint/10 text-stone-700 hover:border-mint/60 hover:bg-mint/20"
                 }`}
                 key={item.id}
                 onClick={() => setPage(item.id)}

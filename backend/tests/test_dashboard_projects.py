@@ -121,3 +121,56 @@ def test_dashboard_updates_people_projects_and_moves_tasks(client: TestClient) -
         assert email is not None
         assert "Project changed from Launch Plan to Retention" in email.text_body
         assert "Priority changed from low to high" in email.text_body
+
+
+def test_dashboard_notification_settings_disable_task_change_email(client: TestClient) -> None:
+    _login(client)
+    settings_response = client.get("/api/dashboard/settings/notifications")
+    assert settings_response.status_code == 200
+    assert settings_response.json()["task_change_email_notifications"] is True
+
+    update_settings = client.put("/api/dashboard/settings/notifications", json={"task_change_email_notifications": False})
+    assert update_settings.status_code == 200
+    assert update_settings.json()["task_change_email_notifications"] is False
+
+    person_response = client.post("/api/dashboard/people", json={"full_name": "No Email Test", "email": "notify@example.com"})
+    assert person_response.status_code == 200
+    person = person_response.json()
+    task_response = client.post(
+        "/api/dashboard/tasks",
+        json={"title": "Notification toggle task", "assigned_person_id": person["id"], "priority": "medium"},
+    )
+    assert task_response.status_code == 200
+    task = task_response.json()
+
+    priority_response = client.post(f"/api/dashboard/tasks/{task['id']}/priority", json={"priority": "urgent"})
+    assert priority_response.status_code == 200
+
+    with SessionLocal() as db:
+        email = db.scalar(select(Email).where(Email.subject == "Task priority changed: Notification toggle task"))
+        assert email is None
+
+
+def test_dashboard_task_title_and_completion_email_notifications(client: TestClient) -> None:
+    _login(client)
+    person_response = client.post("/api/dashboard/people", json={"full_name": "Dana Salem", "email": "dana@example.com"})
+    assert person_response.status_code == 200
+    person = person_response.json()
+    task_response = client.post(
+        "/api/dashboard/tasks",
+        json={"title": "Old dashboard task title", "assigned_person_id": person["id"], "priority": "medium"},
+    )
+    assert task_response.status_code == 200
+    task = task_response.json()
+
+    title_response = client.put(f"/api/dashboard/tasks/{task['id']}", json={"title": "New dashboard task title"})
+    assert title_response.status_code == 200
+    complete_response = client.post(f"/api/dashboard/tasks/{task['id']}/complete")
+    assert complete_response.status_code == 200
+
+    with SessionLocal() as db:
+        update_email = db.scalar(select(Email).where(Email.subject == "Task updated: New dashboard task title"))
+        assert update_email is not None
+        assert "Title changed from Old dashboard task title to New dashboard task title" in update_email.text_body
+        completion_email = db.scalar(select(Email).where(Email.text_body.contains("Status changed from open to completed")))
+        assert completion_email is not None

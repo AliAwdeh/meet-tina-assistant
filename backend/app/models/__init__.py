@@ -1,5 +1,6 @@
 from app.core.database import Base
 from app.models.entities import (
+    AppSetting,
     AuditLog,
     Conversation,
     Email,
@@ -23,6 +24,7 @@ from app.models.entities import (
 
 __all__ = [
     "AuditLog",
+    "AppSetting",
     "Base",
     "Conversation",
     "Email",

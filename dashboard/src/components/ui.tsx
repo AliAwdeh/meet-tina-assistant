@@ -14,7 +14,7 @@ export function Button({ children, className, ...props }: PropsWithChildren<Butt
   return (
     <button
       className={clsx(
-        "inline-flex h-10 items-center justify-center gap-2 rounded-md border-2 border-ink bg-ink px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-black focus:outline-none focus:ring-2 focus:ring-ink focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex h-10 items-center justify-center gap-2 rounded-md border-2 border-ink bg-mint px-4 text-sm font-semibold text-ink shadow-sm transition hover:bg-mint/80 focus:outline-none focus:ring-2 focus:ring-ink focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
         className
       )}
       {...props}

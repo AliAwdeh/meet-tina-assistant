@@ -238,6 +238,13 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class AppSetting(Base, TimestampMixin):
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
 class ReplayGuard(Base):
     __tablename__ = "replay_guards"
 

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, CalendarDays, CheckSquare, Edit3, FolderKanban, GripVertical, Plus, Save, UserRound, X } from "lucide-react";
+import { AlertCircle, CalendarDays, CheckSquare, Edit3, FolderKanban, GripVertical, Plus, Save, Search, UserRound, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { apiGet, apiPost, apiPut, errorMessage, shouldRetry } from "../api/client";
 import { Button, LoadingPanel, Notice, secondaryButtonClass, smallEditButtonClass } from "../components/ui";
@@ -21,6 +21,7 @@ export function TasksBoard() {
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [editing, setEditing] = useState<Task | null>(null);
   const [creating, setCreating] = useState(false);
+  const [search, setSearch] = useState("");
   const tasks = useQuery({
     queryKey: ["Tasks"],
     queryFn: () => apiGet<Task[]>("/api/dashboard/tasks"),
@@ -56,12 +57,33 @@ export function TasksBoard() {
   });
 
   const projectGroups = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase();
     const rows = tasks.data ?? [];
+    const projectLookup = new Map((projects.data ?? []).map((project) => [project.id, project]));
+    const filteredRows = normalizedSearch
+      ? rows.filter((task) => {
+          const project = task.project_id ? projectLookup.get(task.project_id) : null;
+          const haystack = [
+            task.title,
+            task.description,
+            task.status,
+            task.priority,
+            task.assigned_person_name,
+            task.project_name,
+            project?.name,
+            project?.person_name
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          return normalizedSearch.split(/\s+/).every((term) => haystack.includes(term));
+        })
+      : rows;
     const groups = new Map<string, { id: string; projectId: string | null; name: string; owner?: string | null; tasks: Task[] }>();
     for (const project of projects.data ?? []) {
       groups.set(project.id, { id: project.id, projectId: project.id, name: project.name, owner: project.person_name, tasks: [] });
     }
-    for (const task of rows) {
+    for (const task of filteredRows) {
       const key = task.project_id ?? "none";
       if (!groups.has(key)) {
         groups.set(key, { id: key, projectId: task.project_id ?? null, name: task.project_name ?? "No project", tasks: [] });
@@ -69,12 +91,13 @@ export function TasksBoard() {
       groups.get(key)?.tasks.push(task);
     }
     if (!groups.has("none")) groups.set("none", { id: "none", projectId: null, name: "No project", tasks: [] });
-    return Array.from(groups.values()).sort((a, b) => {
+    const visibleGroups = Array.from(groups.values()).filter((group) => !normalizedSearch || group.tasks.length > 0);
+    return visibleGroups.sort((a, b) => {
       if (a.id === "none") return 1;
       if (b.id === "none") return -1;
       return a.name.localeCompare(b.name);
     });
-  }, [projects.data, tasks.data]);
+  }, [projects.data, search, tasks.data]);
 
   const onDrop = (projectId: string | null, priority: Priority) => {
     if (!dragged || moveTask.isPending) return;
@@ -103,6 +126,15 @@ export function TasksBoard() {
           <Plus size={16} />
           New task
         </Button>
+      </div>
+      <div className="flex max-w-xl items-center gap-2 border border-stone-300 bg-white px-3 py-2 shadow-sm focus-within:border-ink">
+        <Search className="shrink-0 text-stone-500" size={17} />
+        <input
+          className="h-8 w-full bg-transparent text-sm outline-none"
+          placeholder="Search tasks, projects, or people"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
       </div>
 
       {(tasks.isError || projects.isError || people.isError || saveTask.isError || moveTask.isError) && (
@@ -133,6 +165,10 @@ export function TasksBoard() {
             onSave={(payload) => saveTask.mutate(payload)}
           />
         </div>
+      )}
+
+      {projectGroups.length === 0 && (
+        <div className="border-y border-stone-200 bg-white/80 px-4 py-8 text-sm text-stone-500">No tasks match the current search.</div>
       )}
 
       {projectGroups.map((project) => (

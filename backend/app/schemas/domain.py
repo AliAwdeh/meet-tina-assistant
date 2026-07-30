@@ -145,6 +145,16 @@ class DashboardSummary(BaseModel):
     scheduler_health: str
 
 
+class NotificationSettings(BaseModel):
+    task_change_email_notifications: bool = True
+
+
+class NotificationSettingsRead(NotificationSettings):
+    task_change_email_recipients: str = (
+        "Related people: assigned person, current project owner, and previous project owner when a task moves."
+    )
+
+
 class NormalizedMessage(BaseModel):
     external_message_id: str
     conversation_id: str

@@ -71,3 +71,8 @@ export type Reminder = {
   trigger_time: string;
   delivery_channel: string;
 };
+
+export type NotificationSettings = {
+  task_change_email_notifications: boolean;
+  task_change_email_recipients: string;
+};
