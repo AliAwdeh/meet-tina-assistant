@@ -4,7 +4,7 @@ import { Edit3, Plus, Save, X } from "lucide-react";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { apiGet, apiPost, apiPut, errorMessage, shouldRetry } from "../api/client";
-import { Button, LoadingPanel, Notice } from "../components/ui";
+import { Button, editButtonClass, LoadingPanel, Notice, secondaryButtonClass } from "../components/ui";
 import type { Meeting, Person, Project, Reminder, Task } from "../types/domain";
 
 type DataType = Person | Project | Task | Meeting | Reminder;
@@ -84,7 +84,7 @@ export function Records({ title }: { title: keyof typeof endpoints }) {
         </div>
         {canEdit && (
           <Button
-            className="bg-white text-ink hover:bg-stone-100"
+            className={secondaryButtonClass}
             onClick={() => {
               setEditing(null);
               setCreating(true);
@@ -158,7 +158,7 @@ export function Records({ title }: { title: keyof typeof endpoints }) {
                   {canEdit && (
                     <td className="w-28 px-3 py-2 text-right">
                       <button
-                        className="inline-flex h-9 items-center gap-1 rounded-md border border-stone-300 bg-white px-3 text-sm font-medium text-ink shadow-sm transition hover:border-ink hover:bg-stone-100"
+                        className={editButtonClass}
                         onClick={() => {
                           setCreating(false);
                           setEditing(row.original);
@@ -318,7 +318,7 @@ function FormActions({ isSaving, onCancel }: { isSaving: boolean; onCancel: () =
         <Save size={16} />
         {isSaving ? "Saving" : "Save"}
       </Button>
-      <Button className="bg-white text-ink hover:bg-stone-100" disabled={isSaving} onClick={onCancel} type="button">
+      <Button className={secondaryButtonClass} disabled={isSaving} onClick={onCancel} type="button">
         <X size={16} />
         Cancel
       </Button>

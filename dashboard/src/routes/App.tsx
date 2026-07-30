@@ -13,7 +13,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, shouldRetry } from "../api/client";
 import { ErrorBoundary } from "../components/ErrorBoundary";
-import { Button, LoadingPanel } from "../components/ui";
+import { Button, LoadingPanel, secondaryButtonClass } from "../components/ui";
 import { Login } from "../pages/Login";
 import { Overview } from "../pages/Overview";
 import { Records } from "../pages/Records";
@@ -75,7 +75,7 @@ export function App() {
           </div>
           <div className="flex items-center gap-2">
             <Button onClick={() => setPage("Tasks")}>New task</Button>
-            <Button className="bg-white text-ink hover:bg-stone-100" disabled={logout.isPending} onClick={() => logout.mutate()}>
+            <Button className={secondaryButtonClass} disabled={logout.isPending} onClick={() => logout.mutate()}>
               Sign out
             </Button>
           </div>
@@ -88,7 +88,7 @@ export function App() {
             return (
               <button
                 className={`flex h-10 min-w-fit items-center gap-2 rounded-md px-3 text-sm transition ${
-                  page === item.id ? "bg-ink text-white" : "text-stone-600 hover:bg-white"
+                  page === item.id ? "bg-ink text-white" : "border border-transparent bg-mint/10 text-stone-700 hover:border-mint/60 hover:bg-mint/20"
                 }`}
                 key={item.id}
                 onClick={() => setPage(item.id)}

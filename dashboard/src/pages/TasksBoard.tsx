@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CalendarDays, CheckSquare, Edit3, FolderKanban, GripVertical, Plus, Save, UserRound, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { apiGet, apiPost, apiPut, errorMessage, shouldRetry } from "../api/client";
-import { Button, LoadingPanel, Notice } from "../components/ui";
+import { Button, LoadingPanel, Notice, secondaryButtonClass, smallEditButtonClass } from "../components/ui";
 import type { Person, Project, Task } from "../types/domain";
 
 const priorities = [
@@ -94,7 +94,7 @@ export function TasksBoard() {
           <p className="text-sm text-stone-500">Project task board</p>
         </div>
         <Button
-          className="bg-white text-ink hover:bg-stone-100"
+          className={secondaryButtonClass}
           onClick={() => {
             setEditing(null);
             setCreating(true);
@@ -211,7 +211,7 @@ function TaskTile({ task, onDragStart, onEdit }: { task: Task; onDragStart: () =
           <div className="flex items-start justify-between gap-2">
             <h4 className="line-clamp-2 text-sm font-semibold leading-5">{task.title}</h4>
             <button
-              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-stone-300 bg-white px-2 text-xs font-semibold text-ink shadow-sm hover:border-ink hover:bg-stone-100"
+              className={smallEditButtonClass}
               onClick={onEdit}
               title="Edit task"
             >
@@ -345,7 +345,7 @@ function TaskForm({
           <Save size={16} />
           {isSaving ? "Saving" : "Save"}
         </Button>
-        <Button className="bg-white text-ink hover:bg-stone-100" disabled={isSaving} onClick={onCancel} type="button">
+        <Button className={secondaryButtonClass} disabled={isSaving} onClick={onCancel} type="button">
           <X size={16} />
           Cancel
         </Button>

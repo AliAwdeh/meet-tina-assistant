@@ -1,6 +1,15 @@
 import { clsx } from "clsx";
 import type { ButtonHTMLAttributes, PropsWithChildren } from "react";
 
+export const secondaryButtonClass =
+  "border-mint/70 bg-mint/15 text-ink hover:border-mint hover:bg-mint/25 focus:ring-mint";
+
+export const editButtonClass =
+  "inline-flex h-9 items-center gap-1 rounded-md border border-amber/70 bg-amber/15 px-3 text-sm font-semibold text-ink shadow-sm transition hover:border-amber hover:bg-amber/25 focus:outline-none focus:ring-2 focus:ring-amber focus:ring-offset-2";
+
+export const smallEditButtonClass =
+  "inline-flex h-8 shrink-0 items-center gap-1 rounded-md border border-amber/70 bg-amber/15 px-2 text-xs font-semibold text-ink shadow-sm transition hover:border-amber hover:bg-amber/25 focus:outline-none focus:ring-2 focus:ring-amber focus:ring-offset-2";
+
 export function Button({ children, className, ...props }: PropsWithChildren<ButtonHTMLAttributes<HTMLButtonElement>>) {
   return (
     <button
