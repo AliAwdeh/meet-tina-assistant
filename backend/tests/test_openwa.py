@@ -1,10 +1,25 @@
 import base64
+from typing import Any
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
 from app.models.entities import Conversation, Email, EmailRecipient, File, Message, N8nRequest, Person, Project, Task
+
+
+def _mock_planner(monkeypatch: Any, actions: list[dict[str, object]]) -> None:
+    async def fake_structured_json(model: object, system: str, user: str, fallback: dict[str, object]) -> dict[str, object]:
+        if "Return only JSON matching: intent" in system:
+            return {
+                "intent": actions[0].get("action_type", "update_task"),
+                "confidence": 0.95,
+                "requires_confirmation": False,
+                "rationale": "test",
+            }
+        return {"actions": actions}
+
+    monkeypatch.setattr("app.agent.graphs.personal_assistant.structured_json", fake_structured_json)
 
 
 def _event(message_id: str = "msg-1") -> dict[str, object]:
@@ -297,6 +312,241 @@ def test_openwa_can_move_task_between_projects_and_change_priority(client: TestC
         assert task is not None
         assert task.project_id == project.id
         assert task.priority == "low"
+
+
+def test_openwa_plural_priority_update_changes_referenced_task_set(client: TestClient, monkeypatch: Any) -> None:
+    with SessionLocal() as db:
+        ali = Person(full_name="Ali Awdeh", email="ali@example.com")
+        db.add(ali)
+        db.flush()
+        first = Task(title="Send rough email", assigned_person_id=ali.id, priority="medium")
+        second = Task(title="Prepare rough report", assigned_person_id=ali.id, priority="low")
+        db.add_all([first, second])
+        db.flush()
+        db.add(
+            Conversation(
+                whatsapp_chat_id="102907500351574@lid",
+                contact_phone="102907500351574",
+                state={"last_person_id": ali.id, "last_task_id": first.id, "last_task_ids": [first.id, second.id]},
+            )
+        )
+        db.commit()
+        first_id = first.id
+        second_id = second.id
+
+    _mock_planner(monkeypatch, [{"action_type": "update_task", "priority": "urgent", "confidence": 0.95}])
+
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "plural-priority-update",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Make them urgent",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    reply = response.json()["reply"]
+    assert "Updated task" in reply
+    assert "priority medium -> urgent" in reply
+    assert "priority low -> urgent" in reply
+
+    with SessionLocal() as db:
+        assert db.get(Task, first_id).priority == "urgent"  # type: ignore[union-attr]
+        assert db.get(Task, second_id).priority == "urgent"  # type: ignore[union-attr]
+
+
+def test_openwa_update_them_applies_previous_rewritten_titles(client: TestClient, monkeypatch: Any) -> None:
+    with SessionLocal() as db:
+        ali = Person(full_name="Ali Awdeh", email="ali@example.com")
+        db.add(ali)
+        db.flush()
+        first = Task(title="Ali i just gave you his email address, send him an email woth his task", assigned_person_id=ali.id)
+        second = Task(title="email a report to me and the ceo mario to work on some stuff he knows about", assigned_person_id=ali.id)
+        db.add_all([first, second])
+        db.flush()
+        conversation = Conversation(
+            whatsapp_chat_id="102907500351574@lid",
+            contact_phone="102907500351574",
+            state={"last_person_id": ali.id, "last_task_id": first.id, "last_task_ids": [first.id, second.id]},
+        )
+        db.add(conversation)
+        db.flush()
+        db.add(
+            Message(
+                external_message_id="assistant-rewrite-suggestions",
+                conversation_id=conversation.id,
+                direction="outbound",
+                message_type="text",
+                text=(
+                    "Here are cleaner titles: 1. Send Ali an email with the details of his task. "
+                    "2. Email a report to me and CEO Mario about the work he is already familiar with."
+                ),
+                raw_event={},
+            )
+        )
+        db.commit()
+        first_id = first.id
+        second_id = second.id
+
+    _mock_planner(
+        monkeypatch,
+        [
+            {
+                "action_type": "update_task",
+                "related_task_id": first_id,
+                "title": "Send Ali an email with the details of his task",
+                "confidence": 0.95,
+            },
+            {
+                "action_type": "update_task",
+                "related_task_id": second_id,
+                "title": "Email a report to me and CEO Mario about the work he is already familiar with",
+                "confidence": 0.95,
+            },
+        ],
+    )
+
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "apply-rewritten-titles",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Update them",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    reply = response.json()["reply"]
+    assert "Updated task" in reply
+    assert "Send Ali an email with the details of his task" in reply
+    assert "Email a report to me and CEO Mario" in reply
+
+    with SessionLocal() as db:
+        assert db.get(Task, first_id).title == "Send Ali an email with the details of his task"  # type: ignore[union-attr]
+        assert (
+            db.get(Task, second_id).title
+            == "Email a report to me and CEO Mario about the work he is already familiar with"
+        )
+
+
+def test_openwa_plural_status_update_changes_referenced_task_set(client: TestClient, monkeypatch: Any) -> None:
+    with SessionLocal() as db:
+        ali = Person(full_name="Ali Awdeh", email="ali@example.com")
+        db.add(ali)
+        db.flush()
+        first = Task(title="First task", assigned_person_id=ali.id)
+        second = Task(title="Second task", assigned_person_id=ali.id)
+        db.add_all([first, second])
+        db.flush()
+        db.add(
+            Conversation(
+                whatsapp_chat_id="102907500351574@lid",
+                contact_phone="102907500351574",
+                state={"last_person_id": ali.id, "last_task_id": first.id, "last_task_ids": [first.id, second.id]},
+            )
+        )
+        db.commit()
+        first_id = first.id
+        second_id = second.id
+
+    _mock_planner(monkeypatch, [{"action_type": "update_task", "status": "in_progress", "confidence": 0.95}])
+
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "plural-status-update",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Set them in progress",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    reply = response.json()["reply"]
+    assert "status open -> in_progress" in reply
+
+    with SessionLocal() as db:
+        assert db.get(Task, first_id).status == "in_progress"  # type: ignore[union-attr]
+        assert db.get(Task, second_id).status == "in_progress"  # type: ignore[union-attr]
+
+
+def test_openwa_rename_that_task_updates_existing_task(client: TestClient) -> None:
+    with SessionLocal() as db:
+        ali = Person(full_name="Ali Awdeh", email="ali@example.com")
+        db.add(ali)
+        db.flush()
+        task = Task(title="Old title", assigned_person_id=ali.id)
+        db.add(task)
+        db.flush()
+        db.add(
+            Conversation(
+                whatsapp_chat_id="102907500351574@lid",
+                contact_phone="102907500351574",
+                state={"last_person_id": ali.id, "last_task_id": task.id, "last_task_ids": [task.id]},
+            )
+        )
+        db.commit()
+        task_id = task.id
+
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "rename-existing-task",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Rename that task to Final QA title",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    assert "title \"Old title\" -> \"Final QA title\"" in response.json()["reply"]
+
+    with SessionLocal() as db:
+        tasks = list(db.scalars(select(Task)))
+        assert len(tasks) == 1
+        assert db.get(Task, task_id).title == "Final QA title"  # type: ignore[union-attr]
+
+
+def test_openwa_missing_update_fields_asks_instead_of_reading_summary(client: TestClient, monkeypatch: Any) -> None:
+    _mock_planner(
+        monkeypatch,
+        [
+            {
+                "action_type": "query_records",
+                "query_target": "summary",
+                "missing_fields": ["Which tasks and fields should I update?"],
+                "confidence": 0.4,
+            }
+        ],
+    )
+
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "missing-update-fields",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Update them",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    reply = response.json()["reply"]
+    assert "Which tasks and fields should I update" in reply
+    assert "I see" not in reply
 
 
 def test_openwa_new_task_called_title_does_not_move_existing_project_context(client: TestClient) -> None:

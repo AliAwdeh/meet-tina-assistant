@@ -39,6 +39,7 @@ class AssistantState(TypedDict, total=False):
     conversation: Conversation | None
     last_person: Person | None
     last_task: Task | None
+    last_tasks: list[Task]
     referenced_people: list[Person]
     referenced_tasks: list[Task]
     referenced_project: Project | None
@@ -169,18 +170,22 @@ def _find_referenced_tasks(db: Session, text: str, people: list[Person], last_ta
 def _conversation_context(
     db: Session,
     message: NormalizedMessage,
-) -> tuple[Conversation | None, Person | None, Task | None, Project | None]:
+) -> tuple[Conversation | None, Person | None, Task | None, Project | None, list[Task]]:
     conversation = db.scalar(select(Conversation).where(Conversation.whatsapp_chat_id == message.conversation_id))
     state = conversation.state if conversation and conversation.state else {}
     last_person = db.get(Person, state.get("last_person_id")) if state.get("last_person_id") else None
     last_task = db.get(Task, state.get("last_task_id")) if state.get("last_task_id") else None
     last_project = db.get(Project, state.get("last_project_id")) if state.get("last_project_id") else None
+    task_ids = state.get("last_task_ids") if isinstance(state.get("last_task_ids"), list) else []
+    last_tasks = [task for task_id in task_ids if isinstance(task_id, str) and (task := db.get(Task, task_id)) is not None]
     if last_task is None and conversation is not None:
         message_ids = select(Message.id).where(Message.conversation_id == conversation.id)
         last_task = db.scalar(select(Task).where(Task.source_message_id.in_(message_ids)).order_by(Task.created_at.desc()))
     if last_project is None and last_task is not None and last_task.project_id:
         last_project = db.get(Project, last_task.project_id)
-    return conversation, last_person, last_task, last_project
+    if not last_tasks and last_task is not None:
+        last_tasks = [last_task]
+    return conversation, last_person, last_task, last_project, last_tasks
 
 
 def _clean_label(value: str) -> str:
@@ -274,6 +279,16 @@ def _extract_project_name(text: str) -> str | None:
     return None
 
 
+def _update_title_hint(text: str) -> str | None:
+    lowered = text.lower()
+    for marker in (" to ", " as "):
+        if marker in lowered:
+            _, _, tail = text.partition(marker)
+            title = _compact_label(tail)
+            return title[:255] if title else None
+    return None
+
+
 def _extract_responsibility_parts(text: str) -> ResponsibilityParts:
     match = re.search(
         r"\bresponsible\s+for\s+(?!(?:the\s+)?project\b)(?P<body>.+?)\s+project\b",
@@ -301,6 +316,18 @@ def _has_explicit_project_reference(text: str) -> bool:
         or re.search(r"\b(?:same|that|this|current|existing)\s+project\b", lowered)
         or re.search(r"\b(?:move|transfer)\s+.+\s+to\s+", lowered)
     )
+
+
+def _task_reference_mode(text: str) -> str | None:
+    words = {word.strip(".,;:!?()[]{}\"'").lower() for word in text.split()}
+    if words.intersection({"them", "those", "these"}):
+        return "plural"
+    lowered = text.lower()
+    if "all tasks" in lowered or "both tasks" in lowered or "these tasks" in lowered or "those tasks" in lowered:
+        return "plural"
+    if words.intersection({"it", "that"}) or "that task" in lowered or "this task" in lowered:
+        return "singular"
+    return None
 
 
 def _upsert_project(db: Session, person: Person, name: str) -> Project:
@@ -416,17 +443,21 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
             priority=priority,  # type: ignore[arg-type]
             confidence=0.76,
         )
-    update_words = ["change", "update", "move", "set", "make"]
-    if any(word in lowered for word in update_words) and any(word in lowered for word in task_references + ["priority", "project"]):
+    update_words = ["change", "update", "move", "set", "make", "rename", "edit"]
+    plural_task_references = ["them", "those", "these"]
+    if any(word in lowered for word in update_words) and any(
+        word in lowered for word in task_references + plural_task_references + ["priority", "project"]
+    ):
         related_task = (state.get("referenced_tasks") or [None])[0] or last_task
         missing_fields: list[str] = []
         if related_task is None:
             missing_fields.append("task")
-        if explicit_priority is None and project_name is None:
+        title_hint = _update_title_hint(text) if any(word in lowered for word in ["rename", "edit"]) else None
+        if explicit_priority is None and project_name is None and title_hint is None:
             missing_fields.append("change")
         return ExtractedAction(
             action_type="update_task",
-            title=related_task.title if related_task is not None else None,
+            title=title_hint,
             related_task_id=related_task.id if related_task is not None else None,
             target_text=text,
             project_name=project_name,
@@ -597,14 +628,19 @@ def _planner_system_prompt() -> str:
         "- If the user creates a person and then says he/she/they in the same message, bind the pronoun to that newly named person.\n"
         "- 'X is responsible for Y and Z project' usually means person X owns project Z and has task Y under that project.\n"
         "- Only move/update an existing task when the user clearly says move/change/update/mark and a task is identifiable.\n"
+        "- Do not plan query_records for update/edit/change/apply requests unless the user is only asking to inspect data.\n"
         "- Do not attach a new task to an old conversation project unless the user explicitly refers to it.\n"
         "- If the user names a person without an email, use person_names with an empty person_emails list.\n"
         "- When a message needs several steps, return several actions in order: upsert_person, then project-bearing "
         "action, then task/email/reminder actions.\n"
+        "- If the assistant recently suggested cleaner titles and the user says update/apply them, return one update_task "
+        "per task with related_task_id and title set to the suggested clean title.\n"
+        "- For plural updates, return one update_task per affected task or one update_task with the shared field change "
+        "when every referenced task should receive the same priority/project/assignee/due date.\n"
         "- Use related_task_id only from the platform context when updating/completing/emailing an existing task.\n"
         "- Ask for missing_fields instead of guessing when multiple people/tasks/projects could match.\n"
         "- Never let previous conversation memory override a newly named person in the latest message.\n"
-        "- If planning update_task, include the fields to change: priority, project_name/project_id, title, due_at, or target_text."
+        "- If planning update_task, include the fields to change: priority, project_name/project_id, title, due_at, status, or target_text."
     )
 
 
@@ -621,8 +657,6 @@ def _normalize_planned_actions(state: AssistantState, actions: list[ExtractedAct
     if not actions:
         return fallback_actions
     if fallback_primary.action_type != "no_action" and all(action.action_type == "no_action" for action in actions):
-        return fallback_actions
-    if fallback_primary.action_type == "create_task" and not any(action.action_type == "create_task" for action in actions):
         return fallback_actions
     if fallback_primary.action_type == "query_records":
         planned_query = next((action for action in actions if action.action_type == "query_records"), None)
@@ -650,13 +684,20 @@ def _normalize_planned_actions(state: AssistantState, actions: list[ExtractedAct
 async def load_context(state: AssistantState) -> AssistantState:
     message = state["message"]
     db = state["db"]
-    conversation, last_person, last_task, last_project = _conversation_context(db, message)
+    conversation, last_person, last_task, last_project, last_tasks = _conversation_context(db, message)
     state["conversation"] = conversation
     state["last_person"] = last_person
     state["last_task"] = last_task
+    state["last_tasks"] = last_tasks
     text = message.text or ""
     people = _find_referenced_people(db, text, last_person)
-    tasks = _find_referenced_tasks(db, text, people, last_task)
+    task_reference_mode = _task_reference_mode(text)
+    if task_reference_mode == "plural" and last_tasks:
+        tasks = last_tasks
+    elif task_reference_mode == "singular" and last_task is not None:
+        tasks = [last_task]
+    else:
+        tasks = _find_referenced_tasks(db, text, people, last_task)
     project_name = _extract_project_name(text)
     explicit_project_reference = _has_explicit_project_reference(text)
     project = None
@@ -775,7 +816,13 @@ def _prompt_with_context(state: AssistantState) -> str:
         project = state.get("referenced_project") or (state["db"].get(Project, last_task.project_id) if last_task.project_id else None)
         project_name = f" / project {project.name}" if project else ""
         lines.append(f"Last related task: {last_task.title}{project_name}")
+    last_tasks = state.get("last_tasks", [])
+    if len(last_tasks) > 1:
+        lines.append("Last referenced task set:")
+        for task in last_tasks[:10]:
+            lines.append(f"- id={task.id} title={task.title} ({_task_context_label(state['db'], task)})")
     lines.append("Resolve pronouns like him/her/that from the last related person/task when unambiguous.")
+    lines.append("Resolve plural task references like them/those/both from the last referenced task set when unambiguous.")
     return "\n".join(lines)
 
 
@@ -795,6 +842,7 @@ def _remember(
     *,
     person: Person | None = None,
     task: Task | None = None,
+    task_ids: list[str] | None = None,
     project: Project | None = None,
     email_id: str | None = None,
 ) -> None:
@@ -805,6 +853,11 @@ def _remember(
         state["last_person_id"] = person.id
     if task is not None:
         state["last_task_id"] = task.id
+        state["last_task_ids"] = [task.id]
+    if task_ids is not None:
+        state["last_task_ids"] = task_ids
+        if task_ids:
+            state["last_task_id"] = task_ids[0]
     if project is not None:
         state["last_project_id"] = project.id
     if email_id is not None:
@@ -921,6 +974,8 @@ async def records_agent(state: AssistantState) -> AssistantState:
     action = _first_action(state)
     if action.action_type != "query_records":
         return state
+    if action.missing_fields:
+        return state
     db = state["db"]
     target = action.query_target or "summary"
     people = state.get("referenced_people", [])
@@ -933,6 +988,7 @@ async def records_agent(state: AssistantState) -> AssistantState:
             state["read_result"] = "I do not see any open tasks."
         else:
             state["read_result"] = "Open tasks:\n" + "\n".join(f"- {_format_task(db, task)}" for task in tasks[:10])
+            _remember(state.get("conversation"), task_ids=[task.id for task in tasks[:10]])
     elif target == "people":
         rows = people or list(db.scalars(select(Person).where(Person.active.is_(True)).order_by(Person.full_name).limit(10)))
         if not rows:
@@ -1031,6 +1087,12 @@ async def task_agent(state: AssistantState) -> AssistantState:
     conversation = state.get("conversation")
     context = ToolContext(db=db, actor_type="openwa", actor_id=message.sender_phone, request_id=message.external_message_id)
     persisted = list(state.get("persisted_entity_ids", []))
+    reference_mode = _task_reference_mode(message.text or "")
+    shared_plural_update = (
+        reference_mode == "plural"
+        and len([action for action in task_actions if action.action_type == "update_task"]) == 1
+        and len(state.get("last_tasks", [])) > 1
+    )
     for action in task_actions:
         if action.action_type == "create_task" and action.title:
             people = state.get("referenced_people", [])
@@ -1069,29 +1131,69 @@ async def task_agent(state: AssistantState) -> AssistantState:
                 else:
                     _append_action_summary(state, f"I saved task \"{task.title}\" ({_task_context_label(db, task)}).")
         elif action.action_type == "update_task":
-            task = db.get(Task, action.related_task_id) if action.related_task_id else None
-            if task is None and state.get("referenced_tasks"):
-                task = state["referenced_tasks"][0]
-            if task is None:
+            target_tasks: list[Task] = []
+            if shared_plural_update and not action.title and state.get("last_tasks"):
+                target_tasks = state["last_tasks"]
+            elif action.related_task_id:
+                task = db.get(Task, action.related_task_id)
+                if task is not None:
+                    target_tasks.append(task)
+            elif state.get("referenced_tasks"):
+                referenced_tasks = [task for task in state["referenced_tasks"] if task is not None]
+                target_tasks = referenced_tasks if reference_mode == "plural" else referenced_tasks[:1]
+            if not target_tasks:
                 state.setdefault("tool_errors", []).append("missing_task")
-            else:
+            for task in target_tasks:
                 old_priority = task.priority
                 old_project_id = task.project_id
+                old_assignee_id = task.assigned_person_id
+                old_due_date = task.due_date
+                old_status = task.status
                 changes: list[str] = []
                 people = state.get("referenced_people", [])
                 project = state.get("referenced_project")
+                new_title = _compact_label(action.title)
+                if new_title and new_title != task.title:
+                    changes.append(f"title \"{task.title}\" -> \"{new_title}\"")
+                    task.title = new_title
+                if action.description is not None and action.description != task.description:
+                    task.description = action.description
+                    changes.append("description updated")
                 if action.project_name:
                     owner = people[0] if people else db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
                     if owner is not None:
                         project = _upsert_project(db, owner, action.project_name)
                         task.project_id = project.id
                         state["referenced_project"] = project
+                assignee = _person_for_action(action, people)
+                if assignee is not None and assignee.id != task.assigned_person_id:
+                    task.assigned_person_id = assignee.id
                 if action.priority:
                     task.priority = action.priority
+                if action.due_at is not None and action.due_at != task.due_date:
+                    task.due_date = action.due_at
+                if action.status is not None and action.status != task.status:
+                    task.status = action.status
+                    task.completed_at = datetime.now(UTC) if action.status == "completed" else None
                 if old_project_id != task.project_id:
                     changes.append(f"project {_project_name(db, old_project_id)} -> {_project_name(db, task.project_id)}")
                 if old_priority != task.priority:
                     changes.append(f"priority {old_priority} -> {task.priority}")
+                if old_status != task.status:
+                    changes.append(f"status {old_status} -> {task.status}")
+                if old_assignee_id != task.assigned_person_id:
+                    old_assignee = db.get(Person, old_assignee_id) if old_assignee_id else None
+                    new_assignee = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
+                    changes.append(
+                        f"assignee {old_assignee.full_name if old_assignee else 'none'} -> "
+                        f"{new_assignee.full_name if new_assignee else 'none'}"
+                    )
+                if old_due_date != task.due_date:
+                    due_label = task.due_date.date().isoformat() if task.due_date else "none"
+                    changes.append(f"due date -> {due_label}")
+                if not changes:
+                    state.setdefault("tool_errors", []).append("missing_update_fields")
+                    continue
                 await _send_task_change_email(
                     db,
                     state["settings"],
@@ -1102,8 +1204,13 @@ async def task_agent(state: AssistantState) -> AssistantState:
                 )
                 persisted.append(task.id)
                 state["last_task"] = task
-                state["referenced_tasks"] = [task]
-                _remember(conversation, person=people[0] if people else None, task=task, project=project)
+                state["referenced_tasks"] = target_tasks
+                _remember(
+                    conversation,
+                    person=people[0] if people else None,
+                    task_ids=[target.id for target in target_tasks],
+                    project=project,
+                )
                 detail = "; ".join(changes) if changes else "no field changed"
                 _append_action_summary(state, f"Updated task \"{task.title}\": {detail}.")
         elif action.action_type == "complete_task":
@@ -1235,11 +1342,15 @@ async def generate_reply(state: AssistantState) -> AssistantState:
     action = _first_action(state)
     if state.get("read_result"):
         state["reply"] = state["read_result"] or "I checked, but I did not find anything relevant."
+    elif state.get("action_summaries"):
+        state["reply"] = "Done. " + " ".join(state["action_summaries"])
     elif state.get("tool_errors"):
         if "email_send_failed" in state["tool_errors"]:
             state["reply"] = "I found the person and task, but the email send failed on the integration side. I logged it so you can retry."
         elif "missing_task" in state["tool_errors"]:
             state["reply"] = "I can update a task, but I could not tell which task you meant."
+        elif "missing_update_fields" in state["tool_errors"]:
+            state["reply"] = "Which field should I update: title, assignee, project, priority, due date, description, or status?"
         else:
             state["reply"] = "I can send it, but I need the recipient email or the task content first."
     elif action.missing_fields:
@@ -1251,8 +1362,6 @@ async def generate_reply(state: AssistantState) -> AssistantState:
             state["reply"] = action.missing_fields[0].rstrip(".?") + "?"
         else:
             state["reply"] = "I can help with that, but I need one detail: " + ", ".join(action.missing_fields) + "."
-    elif state.get("action_summaries"):
-        state["reply"] = "Done. " + " ".join(state["action_summaries"])
     elif action.action_type == "create_task" and state.get("persisted_entity_ids"):
         person = state.get("last_person")
         state["reply"] = f"Done. I saved that as a task for {person.full_name}." if person else "Done. I saved that as a task."
