@@ -642,6 +642,7 @@ def _planner_system_prompt() -> str:
         "per task with related_task_id and title set to the suggested clean title.\n"
         "- For plural updates, return one update_task per affected task or one update_task with the shared field change "
         "when every referenced task should receive the same priority/project/assignee/due date.\n"
+        "- Only include person_names/person_emails on update_task when Sami explicitly asks to assign, reassign, or move responsibility to that person.\n"
         "- Use related_task_id only from the platform context when updating/completing/emailing an existing task.\n"
         "- For send_email, if the recipient has no email in platform context and the user did not provide one, "
         "set missing_fields to ['recipient_email'] instead of pretending email can be sent.\n"
@@ -941,6 +942,10 @@ def _person_for_action(action: ExtractedAction, people: list[Person]) -> Person 
     return people[0] if people else None
 
 
+def _action_has_explicit_assignee(action: ExtractedAction) -> bool:
+    return bool(action.person_names or action.person_emails)
+
+
 def _matching_person_from_context(people: list[Person], name: str | None, email: str | None) -> Person | None:
     lowered_name = (name or "").lower().strip()
     lowered_email = (email or "").lower().strip()
@@ -1121,6 +1126,7 @@ async def task_agent(state: AssistantState) -> AssistantState:
         and len([action for action in task_actions if action.action_type == "update_task"]) == 1
         and len(state.get("last_tasks", [])) > 1
     )
+    created_tasks: list[Task] = []
     for action in task_actions:
         if action.action_type == "create_task" and action.title:
             people = state.get("referenced_people", [])
@@ -1151,6 +1157,7 @@ async def task_agent(state: AssistantState) -> AssistantState:
             state["referenced_project"] = project
             _remember(conversation, person=assignee, task=task, project=project)
             if task is not None:
+                created_tasks.append(task)
                 if assignee is not None:
                     _append_action_summary(
                         state,
@@ -1194,7 +1201,7 @@ async def task_agent(state: AssistantState) -> AssistantState:
                         project = _upsert_project(db, owner, action.project_name)
                         task.project_id = project.id
                         state["referenced_project"] = project
-                assignee = _person_for_action(action, people)
+                assignee = _person_for_action(action, people) if _action_has_explicit_assignee(action) else None
                 if assignee is not None and assignee.id != task.assigned_person_id:
                     task.assigned_person_id = assignee.id
                 if action.priority:
@@ -1255,6 +1262,11 @@ async def task_agent(state: AssistantState) -> AssistantState:
                 state["last_task"] = task
                 _remember(conversation, task=task)
                 _append_action_summary(state, f"I marked task \"{task.title}\" completed.")
+    if len(created_tasks) > 1:
+        state["referenced_tasks"] = created_tasks
+        state["last_tasks"] = created_tasks
+        state["last_task"] = created_tasks[0]
+        _remember(conversation, task_ids=[task.id for task in created_tasks])
     state["persisted_entity_ids"] = persisted
     return state
 

@@ -415,6 +415,60 @@ def test_openwa_plural_priority_update_changes_referenced_task_set(client: TestC
         assert db.get(Task, second_id).priority == "urgent"  # type: ignore[union-attr]
 
 
+def test_openwa_plural_priority_update_preserves_existing_assignees(client: TestClient, monkeypatch: Any) -> None:
+    with SessionLocal() as db:
+        ali = Person(full_name="Ali Awdeh", email="ali@example.com")
+        naji = Person(full_name="Naji", email="naji@example.com")
+        nagy = Person(full_name="Nagy", email="nagy@example.com")
+        db.add_all([ali, naji, nagy])
+        db.flush()
+        first = Task(title="First meeting task", assigned_person_id=ali.id, priority="medium")
+        second = Task(title="Second meeting task", assigned_person_id=naji.id, priority="medium")
+        db.add_all([first, second])
+        db.flush()
+        db.add(
+            Conversation(
+                whatsapp_chat_id="102907500351574@lid",
+                contact_phone="102907500351574",
+                state={"last_person_id": nagy.id, "last_task_id": second.id, "last_task_ids": [first.id, second.id]},
+            )
+        )
+        db.commit()
+        first_id = first.id
+        second_id = second.id
+        ali_id = ali.id
+        naji_id = naji.id
+
+    _mock_planner(monkeypatch, [{"action_type": "update_task", "priority": "urgent", "confidence": 0.95}])
+
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "plural-priority-preserve-assignees",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Make all of them urgent",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    reply = response.json()["reply"]
+    assert "priority medium -> urgent" in reply
+    assert "assignee" not in reply
+
+    with SessionLocal() as db:
+        first = db.get(Task, first_id)
+        second = db.get(Task, second_id)
+        assert first is not None
+        assert second is not None
+        assert first.priority == "urgent"
+        assert second.priority == "urgent"
+        assert first.assigned_person_id == ali_id
+        assert second.assigned_person_id == naji_id
+
+
 def test_openwa_update_them_applies_previous_rewritten_titles(client: TestClient, monkeypatch: Any) -> None:
     with SessionLocal() as db:
         ali = Person(full_name="Ali Awdeh", email="ali@example.com")

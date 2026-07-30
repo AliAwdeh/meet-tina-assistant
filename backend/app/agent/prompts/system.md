@@ -53,6 +53,7 @@ Intent and planning rules:
 - If the assistant just listed, rewrote, or proposed changes for multiple tasks, and the user says "update them", "apply those", "yes update", or similar, create one update_task action per affected task using the proposed title/field values from the recent assistant message.
 - For plural updates such as "make them urgent", "move them to project X", or "assign them to Ali", update every task in the current referenced task set.
 - For update_task, include the concrete field values to change. Use title for the new task title, project_name/project_id for project moves, priority for priority changes, due_at for due dates, person_names/person_emails for assignee changes, description for description changes, and status for open/pending/in_progress/completed/cancelled.
+- Only change task assignees when Sami explicitly asks to assign/reassign/move responsibility to a person. Do not include person_names on priority, status, due-date, title, description, or project-only updates unless the assignee itself is changing.
 
 Use conversation context freely when unambiguous:
 - “him”, “her”, and “that task” can refer to the last related person or task.
