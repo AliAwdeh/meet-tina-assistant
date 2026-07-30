@@ -193,6 +193,7 @@ def _clean_label(value: str) -> str:
 
 def _task_title(text: str) -> str:
     patterns = [
+        r"\b(?:task|todo)\s+(?:called|named|titled)\s+(?P<title>.+)",
         r"\b(?:create|add|make|open)\s+(?:a\s+)?(?:new\s+)?(?:task|todo)\s+(?:for|to|assigned\s+to)\s+.+?\s+(?:called|named|titled)\s+(?P<title>.+)",
         r"\b(?:create|add|make|open)\s+(?:a\s+)?(?:new\s+)?(?:task|todo)\s+(?:called|named|titled)\s+(?P<title>.+)",
         r"\b(?:task|todo)\s+(?:for|to|assigned\s+to)\s+.+?\s+(?:called|named|titled)\s+(?P<title>.+)",
@@ -210,6 +211,7 @@ def _task_title(text: str) -> str:
 
 def _infer_person_names(text: str) -> list[str]:
     patterns = [
+        r"\b(?:person|contact)\s+(?:called|named|titled)\s+(?P<name>.+?)(?:\s+(?:that|who|with|and)\b|[.,;]|$)",
         r"\b(?:task|todo)\s+(?:for|to|assigned\s+to)\s+(?P<name>.+?)\s+(?:called|named|titled)\b",
         r"\b(?:create|add|make|open)\s+(?:a\s+)?(?:new\s+)?(?:task|todo)\s+(?:for|to|assigned\s+to)\s+(?P<name>.+?)\s+(?:called|named|titled|needs?\s+to)\b",
         r"\bfor\s+(?P<name>[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' -]{1,60})\s+(?:called|named|titled)\b",
@@ -242,6 +244,7 @@ def _extract_priority(text: str) -> str | None:
 
 def _extract_project_name(text: str) -> str | None:
     patterns = [
+        r"\bproject\s+(?:called|named|titled)\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 &._'-]{1,80})",
         r"\bproject\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 &._'-]{1,80})",
         r"\bfor\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 &._'-]{1,80})\s+project\b",
         r"\bon\s+(?P<name>[A-Za-z0-9][A-Za-z0-9 &._'-]{1,80})\s+project\b",
@@ -250,7 +253,11 @@ def _extract_project_name(text: str) -> str | None:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if not match:
             continue
-        name = re.split(r"\b(needs?|task|priority|due|send|email|remind)\b", match.group("name"), flags=re.IGNORECASE)[0]
+        name = re.split(
+            r"\b(needs?|task|priority|due|send|email|remind|with|and|under|for)\b",
+            match.group("name"),
+            flags=re.IGNORECASE,
+        )[0]
         name = re.sub(r"\s+", " ", name).strip(" .,-")
         if name:
             return name[:255]
@@ -372,7 +379,19 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
             confidence=0.86,
             missing_fields=missing_fields,
         )
-    if extracted_people and not any(word in lowered for word in ["task", "needs to", "send", "remind"]):
+    if person_names and project_name and not any(word in lowered for word in ["task", "needs to", "send", "remind"]):
+        return ExtractedAction(
+            action_type="upsert_person",
+            title=person_names[0],
+            description=text,
+            person_names=person_names,
+            person_emails=person_emails,
+            project_name=project_name,
+            confidence=0.87,
+        )
+    if person_names and any(word in lowered for word in ["person", "contact"]) and not any(
+        word in lowered for word in ["task", "needs to", "send", "remind"]
+    ):
         return ExtractedAction(
             action_type="upsert_person",
             title=person_names[0] if person_names else None,
@@ -509,6 +528,8 @@ def _normalize_planned_actions(state: AssistantState, actions: list[ExtractedAct
     fallback_actions = state.get("fallback_actions") or _heuristic_plan(state)
     fallback_primary = _primary_action(fallback_actions)
     if not actions:
+        return fallback_actions
+    if fallback_primary.action_type != "no_action" and all(action.action_type == "no_action" for action in actions):
         return fallback_actions
     if fallback_primary.action_type == "create_task" and not any(action.action_type == "create_task" for action in actions):
         return fallback_actions
@@ -829,6 +850,9 @@ async def people_agent(state: AssistantState) -> AssistantState:
             project = _upsert_project(db, people[0], action.project_name)
             state["referenced_project"] = project
             _remember(conversation, project=project)
+            persisted = state.get("persisted_entity_ids", [])
+            if project.id not in persisted:
+                state["persisted_entity_ids"] = persisted + [project.id]
         if action.action_type == "upsert_person" and people:
             persisted = state.get("persisted_entity_ids", [])
             if people[0].id not in persisted:
@@ -1015,6 +1039,8 @@ async def _general_conversation_reply(state: AssistantState) -> str:
         "If they ask why something happened, answer directly.\n"
         "Mention that you can create and update people, projects, tasks, priorities, reminders, meetings, and emails when useful.\n"
         "Do not say an action was saved unless the tool layer already saved it.\n"
+        "Do not say 'I will create', 'I will update', or 'I can do that' for a requested platform action here; "
+        "the tool layer would have handled real actions before this reply.\n"
         "Do not use the word 'Noted' as the whole reply."
     )
     try:
@@ -1053,7 +1079,11 @@ async def generate_reply(state: AssistantState) -> AssistantState:
         state["reply"] = f"Done. I updated {task.title}." if task else "Done. I updated the task."
     elif action.action_type == "upsert_person" and state.get("persisted_entity_ids"):
         person = state.get("last_person")
-        state["reply"] = f"Done. I saved {person.full_name}." if person else "Done. I saved the contact."
+        project = state.get("referenced_project")
+        if person and project:
+            state["reply"] = f"Done. I saved {person.full_name} and the project {project.name}."
+        else:
+            state["reply"] = f"Done. I saved {person.full_name}." if person else "Done. I saved the contact."
     elif action.action_type == "send_email" and state.get("persisted_entity_ids"):
         person = state.get("last_person")
         target = f" to {person.full_name}" if person else ""

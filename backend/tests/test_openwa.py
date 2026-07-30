@@ -339,6 +339,57 @@ def test_openwa_new_task_called_title_does_not_move_existing_project_context(cli
         assert tasks[1].project_id is None
 
 
+def test_openwa_creates_named_person_and_project_without_email(client: TestClient) -> None:
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "person-project-called",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Create a new person called Darwish that have a project called Gulfmates.",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    reply = response.json()["reply"]
+    assert "Darwish" in reply
+    assert "Gulfmates" in reply
+
+    with SessionLocal() as db:
+        darwish = db.scalar(select(Person).where(Person.full_name == "Darwish"))
+        assert darwish is not None
+        project = db.scalar(select(Project).where(Project.person_id == darwish.id, Project.name == "Gulfmates"))
+        assert project is not None
+
+
+def test_openwa_creates_named_person_project_and_task(client: TestClient) -> None:
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "person-project-task-called",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Create a new person called Darwish with a project called Gulfmates and a task called prepare launch plan.",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    assert "task" in response.json()["reply"].lower()
+
+    with SessionLocal() as db:
+        darwish = db.scalar(select(Person).where(Person.full_name == "Darwish"))
+        assert darwish is not None
+        project = db.scalar(select(Project).where(Project.person_id == darwish.id, Project.name == "Gulfmates"))
+        assert project is not None
+        task = db.scalar(select(Task).where(Task.assigned_person_id == darwish.id, Task.title == "prepare launch plan"))
+        assert task is not None
+        assert task.project_id == project.id
+
+
 def test_openwa_duplicate_event_is_idempotent(client: TestClient) -> None:
     headers = {"X-OpenWA-Token": "test-openwa"}
     first = client.post("/webhooks/openwa", json=_event(), headers=headers)
