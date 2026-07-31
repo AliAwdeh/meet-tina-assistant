@@ -22,6 +22,8 @@ from app.schemas.domain import NormalizedMessage, NotificationSettings, PersonCr
 logger = logging.getLogger(__name__)
 EMAIL_RE = re.compile(r"(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})", re.IGNORECASE)
 NOTIFICATION_SETTINGS_KEY = "notification_settings"
+PROJECT_PRIORITY_NAMES = {1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}
+PROJECT_PRIORITY_ORDERS = {"urgent": 1, "high": 2, "medium": 3, "low": 4}
 
 
 class ResponsibilityParts(TypedDict, total=False):
@@ -650,13 +652,13 @@ def _planner_system_prompt() -> str:
         "- For plural updates, return one update_task per affected task or one update_task with the shared field change "
         "when every referenced task should receive the same priority/project/assignee/due date.\n"
         "- Only include person_names/person_emails on update_task when Sami explicitly asks to assign, reassign, or move responsibility to that person.\n"
-        "- Use priority for low/medium/high/urgent labels. Use priority_order for numeric order such as priority 1, #1, first, second, or move it up/down in a project.\n"
+        "- For project tasks, priority_order is the priority: 1 urgent, 2 high, 3 medium, 4 low, and 5+ as a number. Use priority only as a loose label for person-only tasks.\n"
         "- Use related_task_id only from the platform context when updating/completing/emailing an existing task.\n"
         "- For send_email, if the recipient has no email in platform context and the user did not provide one, "
         "set missing_fields to ['recipient_email'] instead of pretending email can be sent.\n"
         "- Ask for missing_fields instead of guessing when multiple people/tasks/projects could match.\n"
         "- Never let previous conversation memory override a newly named person in the latest message.\n"
-        "- If planning update_task, include the fields to change: priority, priority_order, project_name/project_id, title, due_at, status, or target_text."
+        "- If planning update_task, include the fields to change: priority_order, priority, project_name/project_id, title, due_at, status, or target_text."
     )
 
 
@@ -815,8 +817,8 @@ def _prompt_with_context(state: AssistantState) -> str:
         "- create/update people",
         "- create/update projects owned by people",
         "- create/update/move/complete tasks assigned to people and optionally attached to projects",
-        "- change task priority between low, medium, high, urgent",
-        "- change numeric task priority order inside a project",
+        "- change project task priority by priority_order, where 1 urgent, 2 high, 3 medium, 4 low, and 5+ is the number",
+        "- change loose low/medium/high/urgent priority labels for person-only tasks",
         "- send task-related emails through n8n",
         "- read back people, projects, tasks, meetings, reminders, and email status",
         "Multiple internal actions may be coordinated for one user message when the fields are clear.",
@@ -896,9 +898,10 @@ def _format_task(db: Session, task: Task) -> str:
     project = db.get(Project, task.project_id) if task.project_id else None
     assignee = f" for {person.full_name}" if person else ""
     project_label = f" [{project.name}]" if project else ""
-    order_label = f"#{task.priority_order} " if project and task.priority_order > 0 else ""
+    priority = _task_priority_name(task)
+    order_label = f"{priority} " if project and task.priority_order > 0 else ""
     due = f", due {task.due_date.date().isoformat()}" if task.due_date else ""
-    return f"{project_label} {order_label}{task.title}{assignee} ({task.priority}, {task.status}{due})".strip()
+    return f"{project_label} {order_label}{task.title}{assignee} ({task.status}{due})".strip()
 
 
 def _format_tasks_by_project(db: Session, tasks: list[Task]) -> str:
@@ -917,10 +920,10 @@ def _format_tasks_by_project(db: Session, tasks: list[Task]) -> str:
         )
         lines.append(f"{labels[key]}:")
         for index, task in enumerate(rows, start=1):
-            order = task.priority_order if task.priority_order > 0 else index
+            priority = _project_priority_name(task.priority_order if task.priority_order > 0 else index) if key != "none" else task.priority.title()
             person = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
             assignee = f" - {person.full_name}" if person else ""
-            lines.append(f"- #{order} {task.title}{assignee} ({task.priority}, {task.status})")
+            lines.append(f"- {priority}: {task.title}{assignee} ({task.status})")
     return "\n".join(lines)
 
 
@@ -933,8 +936,9 @@ def _task_context_label(db: Session, task: Task) -> str:
     if project is not None:
         parts.append(f"in {project.name}")
         if task.priority_order > 0:
-            parts.append(f"project order {task.priority_order}")
-    parts.append(f"priority {task.priority}")
+            parts.append(f"priority {_project_priority_name(task.priority_order)}")
+    if project is None:
+        parts.append(f"priority {task.priority}")
     return ", ".join(parts)
 
 
@@ -954,6 +958,22 @@ def _ordered_project_tasks(db: Session, project_id: str) -> list[Task]:
         )
     )
     return sorted(tasks, key=lambda task: (task.priority_order if task.priority_order > 0 else 1_000_000, task.created_at))
+
+
+def _project_priority_name(priority_order: int | None) -> str:
+    if priority_order is None or priority_order <= 0:
+        return "Unranked"
+    return PROJECT_PRIORITY_NAMES.get(priority_order, str(priority_order))
+
+
+def _project_priority_order(priority: str | None) -> int | None:
+    return PROJECT_PRIORITY_ORDERS.get(priority or "")
+
+
+def _task_priority_name(task: Task, project_id: str | None = None) -> str:
+    if project_id or task.project_id:
+        return _project_priority_name(task.priority_order)
+    return task.priority.title()
 
 
 def _normalize_project_priority_sequence(
@@ -988,7 +1008,7 @@ def _project_priority_list(db: Session, project_id: str | None) -> str:
     for task in tasks:
         person = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
         assignee = f" ({person.full_name})" if person else ""
-        lines.append(f"{task.priority_order}. {task.title}{assignee}")
+        lines.append(f"{_project_priority_name(task.priority_order)}: {task.title}{assignee}")
     return "\n".join(lines)
 
 
@@ -1078,10 +1098,10 @@ async def _send_task_change_email(
         return
     people = _task_notification_people(db, task, old_project_id=old_project_id)
     changes: list[str] = []
-    if old_priority is not None and old_priority != task.priority:
-        changes.append(f"Priority changed from {old_priority} to {task.priority}.")
     if old_priority_order is not None and old_priority_order != task.priority_order:
-        changes.append(f"Priority order changed from {old_priority_order or 'unranked'} to {task.priority_order}.")
+        changes.append(f"Priority changed from {_project_priority_name(old_priority_order)} to {_project_priority_name(task.priority_order)}.")
+    elif old_priority is not None and old_priority != task.priority:
+        changes.append(f"Priority changed from {old_priority.title()} to {task.priority.title()}.")
     if old_project_id != task.project_id:
         old_project = db.get(Project, old_project_id) if old_project_id else None
         new_project = db.get(Project, task.project_id) if task.project_id else None
@@ -1118,10 +1138,8 @@ async def _send_task_created_email(db: Session, settings: Settings, message: Nor
         "",
         f"Assigned to: {person.full_name if person else 'Unassigned'}",
         f"Project: {project.name if project else 'No project'}",
-        f"Priority: {task.priority}",
+        f"Priority: {_task_priority_name(task)}",
     ]
-    if project and task.priority_order > 0:
-        lines.append(f"Project order: {task.priority_order}")
     priority_list = _project_priority_list(db, task.project_id)
     if priority_list:
         lines.extend(["", priority_list])
@@ -1273,13 +1291,14 @@ async def task_agent(state: AssistantState) -> AssistantState:
                 project = _upsert_project(db, assignee, action.project_name)
             elif project is None and state.get("explicit_project_reference"):
                 project = state.get("referenced_project")
+            priority_order = action.priority_order or (_project_priority_order(action.priority) if project is not None else None)
             result = create_task_tool(
                 context,
                 TaskCreate(
                     title=action.title,
                     description=action.description,
                     priority=action.priority or "medium",
-                    priority_order=action.priority_order,
+                    priority_order=priority_order,
                     assigned_person_id=assignee.id if assignee else None,
                     project_id=project.id if project else None,
                     due_date=action.due_at,
@@ -1288,7 +1307,7 @@ async def task_agent(state: AssistantState) -> AssistantState:
             persisted.append(result["id"])
             task = db.get(Task, result["id"])
             if task is not None:
-                _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=action.priority_order)
+                _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=priority_order)
                 await _send_task_created_email(db, state["settings"], message, task)
             current_message = db.scalar(select(Message).where(Message.external_message_id == message.external_message_id))
             if task is not None and current_message is not None:
@@ -1327,6 +1346,7 @@ async def task_agent(state: AssistantState) -> AssistantState:
                 old_due_date = task.due_date
                 old_status = task.status
                 old_priority_order = task.priority_order
+                desired_priority_order = action.priority_order
                 changes: list[str] = []
                 people = state.get("referenced_people", [])
                 project = state.get("referenced_project")
@@ -1346,10 +1366,12 @@ async def task_agent(state: AssistantState) -> AssistantState:
                 assignee = _person_for_action(action, people) if _action_has_explicit_assignee(action) else None
                 if assignee is not None and assignee.id != task.assigned_person_id:
                     task.assigned_person_id = assignee.id
-                if action.priority:
+                if action.priority and task.project_id:
+                    desired_priority_order = desired_priority_order or _project_priority_order(action.priority)
+                elif action.priority:
                     task.priority = action.priority
-                if action.priority_order is not None:
-                    task.priority_order = action.priority_order
+                if desired_priority_order is not None:
+                    task.priority_order = desired_priority_order
                 if action.due_at is not None and action.due_at != task.due_date:
                     task.due_date = action.due_at
                 if action.status is not None and action.status != task.status:
@@ -1358,15 +1380,22 @@ async def task_agent(state: AssistantState) -> AssistantState:
                 if old_project_id and old_project_id != task.project_id:
                     _normalize_project_priority_sequence(db, old_project_id)
                 if task.project_id and (
-                    old_project_id != task.project_id or action.priority_order is not None or task.priority_order <= 0
+                    old_project_id != task.project_id or desired_priority_order is not None or task.priority_order <= 0
                 ):
-                    _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=action.priority_order)
+                    _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=desired_priority_order)
                 if old_project_id != task.project_id:
                     changes.append(f"project {_project_name(db, old_project_id)} -> {_project_name(db, task.project_id)}")
                 if old_priority != task.priority:
                     changes.append(f"priority {old_priority} -> {task.priority}")
-                if old_priority_order != task.priority_order and (action.priority_order is not None or old_project_id != task.project_id):
-                    changes.append(f"project order {old_priority_order or 'unranked'} -> {task.priority_order}")
+                if old_priority_order != task.priority_order and (desired_priority_order is not None or old_project_id != task.project_id):
+                    changes.append(
+                        f"priority {_project_priority_name(old_priority_order)} -> {_project_priority_name(task.priority_order)}"
+                    )
+                elif desired_priority_order is not None and desired_priority_order != task.priority_order:
+                    changes.append(
+                        f"priority stayed {_project_priority_name(task.priority_order)} because the project has fewer than "
+                        f"{desired_priority_order} active tasks"
+                    )
                 if old_status != task.status:
                     changes.append(f"status {old_status} -> {task.status}")
                 if old_assignee_id != task.assigned_person_id:
@@ -1387,9 +1416,9 @@ async def task_agent(state: AssistantState) -> AssistantState:
                     state["settings"],
                     message,
                     task,
-                    old_priority=old_priority if action.priority else None,
+                    old_priority=old_priority if action.priority and not task.project_id else None,
                     old_project_id=old_project_id,
-                    old_priority_order=old_priority_order if action.priority_order is not None or old_project_id != task.project_id else None,
+                    old_priority_order=old_priority_order if desired_priority_order is not None or old_project_id != task.project_id else None,
                 )
                 persisted.append(task.id)
                 state["last_task"] = task

@@ -35,6 +35,8 @@ from app.services.audit import write_audit
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 NOTIFICATION_SETTINGS_KEY = "notification_settings"
+PROJECT_PRIORITY_NAMES = {1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}
+PROJECT_PRIORITY_ORDERS = {"urgent": 1, "high": 2, "medium": 3, "low": 4}
 
 
 def _notification_settings(db: Session) -> NotificationSettingsRead:
@@ -166,6 +168,22 @@ def _ordered_project_tasks(db: Session, project_id: str) -> list[Task]:
     return sorted(tasks, key=lambda task: (task.priority_order if task.priority_order > 0 else 1_000_000, task.created_at))
 
 
+def _project_priority_name(priority_order: int | None) -> str:
+    if priority_order is None or priority_order <= 0:
+        return "Unranked"
+    return PROJECT_PRIORITY_NAMES.get(priority_order, str(priority_order))
+
+
+def _project_priority_order(priority: str | None) -> int | None:
+    return PROJECT_PRIORITY_ORDERS.get(priority or "")
+
+
+def _task_priority_name(task: Task, project_id: str | None = None) -> str:
+    if project_id or task.project_id:
+        return _project_priority_name(task.priority_order)
+    return task.priority.title()
+
+
 def _normalize_project_priority_sequence(
     db: Session,
     project_id: str | None,
@@ -198,7 +216,7 @@ def _project_priority_list(db: Session, project_id: str | None) -> str:
     for task in tasks:
         assignee = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
         assignee_label = f" ({assignee.full_name})" if assignee else ""
-        lines.append(f"{task.priority_order}. {task.title}{assignee_label}")
+        lines.append(f"{_project_priority_name(task.priority_order)}: {task.title}{assignee_label}")
     return "\n".join(lines)
 
 
@@ -264,7 +282,8 @@ async def create_task(
     if payload.project_id and db.get(Project, payload.project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
     task = records.create_task(db, payload, created_by=user.id)
-    _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=payload.priority_order)
+    desired_order = payload.priority_order or (_project_priority_order(payload.priority) if payload.project_id else None)
+    _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=desired_order)
     write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="create_task", entity_type="task", entity_id=task.id)
     await _send_task_created_email(db, settings, user, task)
     db.commit()
@@ -315,10 +334,10 @@ async def _send_task_change_email(
     changes: list[str] = []
     if old_title is not None and old_title != task.title:
         changes.append(f"Title changed from {old_title} to {task.title}.")
-    if old_priority is not None and old_priority != task.priority:
-        changes.append(f"Priority changed from {old_priority} to {task.priority}.")
     if old_priority_order is not None and old_priority_order != task.priority_order:
-        changes.append(f"Priority order changed from {old_priority_order or 'unranked'} to {task.priority_order}.")
+        changes.append(f"Priority changed from {_project_priority_name(old_priority_order)} to {_project_priority_name(task.priority_order)}.")
+    elif old_priority is not None and old_priority != task.priority:
+        changes.append(f"Priority changed from {old_priority.title()} to {task.priority.title()}.")
     if old_project_id != task.project_id:
         old_project = db.get(Project, old_project_id) if old_project_id else None
         new_project = db.get(Project, task.project_id) if task.project_id else None
@@ -382,10 +401,8 @@ async def _send_task_created_email(
         "",
         f"Assigned to: {person.full_name if person else 'Unassigned'}",
         f"Project: {project.name if project else 'No project'}",
-        f"Priority: {task.priority}",
+        f"Priority: {_task_priority_name(task)}",
     ]
-    if project and task.priority_order > 0:
-        lines.append(f"Project order: {task.priority_order}")
     priority_list = _project_priority_list(db, task.project_id)
     if priority_list:
         lines.extend(["", priority_list])
@@ -430,11 +447,14 @@ async def update_task(
     old_status = task.status
     old_due_date = task.due_date
     old_priority_order = task.priority_order
+    project_priority_order = _project_priority_order(payload.priority) if payload.priority and (payload.project_id or task.project_id) else None
     for field in payload.model_fields_set:
         if field == "priority_order" and getattr(payload, field) is None:
             continue
+        if field == "priority" and project_priority_order is not None:
+            continue
         setattr(task, field, getattr(payload, field))
-    requested_priority_order = payload.priority_order if "priority_order" in payload.model_fields_set else None
+    requested_priority_order = payload.priority_order if "priority_order" in payload.model_fields_set else project_priority_order
     if old_project_id and old_project_id != task.project_id:
         _normalize_project_priority_sequence(db, old_project_id)
     if task.project_id and (old_project_id != task.project_id or requested_priority_order is not None or task.priority_order <= 0):
@@ -483,8 +503,12 @@ async def update_task_priority(
         raise HTTPException(status_code=404, detail="Task not found")
     old_priority = task.priority
     old_priority_order = task.priority_order
-    task.priority = payload.priority
-    _normalize_project_priority_sequence(db, task.project_id)
+    if task.project_id:
+        task.priority_order = _project_priority_order(payload.priority) or task.priority_order
+        _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=task.priority_order)
+    else:
+        task.priority = payload.priority
+        _normalize_project_priority_sequence(db, task.project_id)
     write_audit(
         db,
         actor_type="dashboard_user",
@@ -494,13 +518,13 @@ async def update_task_priority(
         entity_id=task.id,
         safe_metadata={"old_priority": old_priority, "new_priority": payload.priority},
     )
-    if old_priority != payload.priority:
+    if old_priority != task.priority or old_priority_order != task.priority_order:
         await _send_task_change_email(
             db,
             settings,
             user,
             task,
-            old_priority=old_priority,
+            old_priority=old_priority if not task.project_id else None,
             old_project_id=task.project_id,
             old_priority_order=old_priority_order if old_priority_order != task.priority_order else None,
         )

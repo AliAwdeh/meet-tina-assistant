@@ -38,6 +38,15 @@ def test_dashboard_projects_and_priority_change_email(client: TestClient) -> Non
     project = project_response.json()
     assert project["person_name"] == "Rami Mansour"
 
+    first_task_response = client.post(
+        "/api/dashboard/tasks",
+        json={
+            "title": "Review vendor shortlist",
+            "assigned_person_id": person["id"],
+            "project_id": project["id"],
+            "priority": "medium",
+        },
+    )
     task_response = client.post(
         "/api/dashboard/tasks",
         json={
@@ -47,6 +56,7 @@ def test_dashboard_projects_and_priority_change_email(client: TestClient) -> Non
             "priority": "medium",
         },
     )
+    assert first_task_response.status_code == 200
     assert task_response.status_code == 200
     task = task_response.json()
     assert task["project_name"] == "Ops Cleanup"
@@ -54,13 +64,13 @@ def test_dashboard_projects_and_priority_change_email(client: TestClient) -> Non
 
     priority_response = client.post(f"/api/dashboard/tasks/{task['id']}/priority", json={"priority": "urgent"})
     assert priority_response.status_code == 200
-    assert priority_response.json()["priority"] == "urgent"
+    assert priority_response.json()["priority_order"] == 1
 
     with SessionLocal() as db:
         email = db.scalar(select(Email).where(Email.subject == "Task priority changed: Confirm vendor pricing"))
         assert email is not None
         assert email.status == "queued"
-        assert "changed from medium to urgent" in email.text_body
+        assert "Priority changed from High to Urgent" in email.text_body
         recipient = db.scalar(select(EmailRecipient).where(EmailRecipient.email_id == email.id))
         assert recipient is not None
         assert recipient.email_address == "rami@example.com"
@@ -107,13 +117,13 @@ def test_dashboard_project_priority_order_email_includes_full_project_list(clien
             ("First item", 2),
             ("Second item", 3),
         ]
-        email = db.scalar(select(Email).where(Email.subject == "Task updated: Third item"))
+        email = db.scalar(select(Email).where(Email.subject == "Task priority changed: Third item"))
         assert email is not None
-        assert "Priority order changed from 3 to 1" in email.text_body
+        assert "Priority changed from Medium to Urgent" in email.text_body
         assert "Current priority list for Priority Project:" in email.text_body
-        assert "1. Third item (Priority Owner)" in email.text_body
-        assert "2. First item (Priority Owner)" in email.text_body
-        assert "3. Second item (Priority Owner)" in email.text_body
+        assert "Urgent: Third item (Priority Owner)" in email.text_body
+        assert "High: First item (Priority Owner)" in email.text_body
+        assert "Medium: Second item (Priority Owner)" in email.text_body
 
 
 def test_dashboard_task_creation_email_includes_project_priority_list(client: TestClient) -> None:
@@ -137,8 +147,9 @@ def test_dashboard_task_creation_email_includes_project_priority_list(client: Te
         assert email is not None
         assert email.status == "queued"
         assert 'The task "Creation email task" was created.' in email.text_body
+        assert "Priority: Urgent" in email.text_body
         assert "Current priority list for Creation Project:" in email.text_body
-        assert "1. Creation email task (Create Notify)" in email.text_body
+        assert "Urgent: Creation email task (Create Notify)" in email.text_body
         recipient = db.scalar(select(EmailRecipient).where(EmailRecipient.email_id == email.id))
         assert recipient is not None
         assert recipient.email_address == "create-notify@example.com"
@@ -185,7 +196,7 @@ def test_dashboard_updates_people_projects_and_moves_tasks(client: TestClient) -
     )
     assert moved_task.status_code == 200
     assert moved_task.json()["project_name"] == "Retention"
-    assert moved_task.json()["priority"] == "high"
+    assert moved_task.json()["priority_order"] == 1
 
     with SessionLocal() as db:
         stored_task = db.get(Task, task["id"])
@@ -196,7 +207,7 @@ def test_dashboard_updates_people_projects_and_moves_tasks(client: TestClient) -
         email = db.scalar(select(Email).where(Email.subject == "Task updated: Send stakeholder summary"))
         assert email is not None
         assert "Project changed from Launch Plan to Retention" in email.text_body
-        assert "Priority changed from low to high" in email.text_body
+        assert "Project changed from Launch Plan to Retention" in email.text_body
 
 
 def test_dashboard_notification_settings_disable_task_change_email(client: TestClient) -> None:

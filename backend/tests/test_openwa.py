@@ -242,7 +242,7 @@ def test_openwa_lists_person_tasks_with_projects(client: TestClient) -> None:
     reply = query_response.json()["reply"]
     assert "Website Redesign" in reply
     assert "review homepage copy" in reply
-    assert "urgent" in reply
+    assert "Urgent" in reply
 
     with SessionLocal() as db:
         sara = db.scalar(select(Person).where(Person.email == "sara@example.com"))
@@ -357,7 +357,7 @@ def test_openwa_can_move_task_between_projects_and_change_priority(client: TestC
     assert priority_response.status_code == 200
     priority_reply = priority_response.json()["reply"]
     assert "Updated task" in priority_reply
-    assert "priority medium -> low" in priority_reply
+    assert "priority stayed Urgent" in priority_reply
 
     with SessionLocal() as db:
         lina = db.scalar(select(Person).where(Person.email == "lina@example.com"))
@@ -367,7 +367,7 @@ def test_openwa_can_move_task_between_projects_and_change_priority(client: TestC
         task = db.scalar(select(Task).where(Task.assigned_person_id == lina.id))
         assert task is not None
         assert task.project_id == project.id
-        assert task.priority == "low"
+        assert task.priority_order == 1
 
 
 def test_openwa_plural_priority_update_changes_referenced_task_set(client: TestClient, monkeypatch: Any) -> None:
@@ -508,7 +508,7 @@ def test_openwa_numeric_project_priority_order_update_sends_project_list(client:
     response = client.post("/webhooks/openwa?token=test-openwa", json=event)
     assert response.status_code == 200
     reply = response.json()["reply"]
-    assert "project order 2 -> 1" in reply
+    assert "priority High -> Urgent" in reply
 
     with SessionLocal() as db:
         first = db.get(Task, first_id)
@@ -519,10 +519,10 @@ def test_openwa_numeric_project_priority_order_update_sends_project_list(client:
         assert second.priority_order == 1
         email = db.scalar(select(Email).where(Email.subject == "Task updated: Second task"))
         assert email is not None
-        assert "Priority order changed from 2 to 1" in email.text_body
+        assert "Priority changed from High to Urgent" in email.text_body
         assert "Current priority list for Ops:" in email.text_body
-        assert "1. Second task (Ali Awdeh)" in email.text_body
-        assert "2. First task (Ali Awdeh)" in email.text_body
+        assert "Urgent: Second task (Ali Awdeh)" in email.text_body
+        assert "High: First task (Ali Awdeh)" in email.text_body
 
 
 def test_openwa_update_them_applies_previous_rewritten_titles(client: TestClient, monkeypatch: Any) -> None:
@@ -846,7 +846,7 @@ def test_openwa_creates_responsible_person_project_task_and_remembers_context(cl
     assert "Nagy" in follow_up_reply
     assert "Abu Dhabi maids" in follow_up_reply
     assert "remove his eyeglasses" in follow_up_reply
-    assert "high" in follow_up_reply
+    assert "Urgent" in follow_up_reply
 
     with SessionLocal() as db:
         nagy = db.scalar(select(Person).where(Person.full_name == "Nagy"))

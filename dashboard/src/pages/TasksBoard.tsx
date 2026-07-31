@@ -26,6 +26,13 @@ const priorities = [
   { id: "low", label: "Low", dot: "bg-stone-400", tone: "border-stone-300 bg-stone-50 text-stone-600" }
 ] as const;
 
+const sequencePriorityNames = [
+  priorities[0],
+  priorities[1],
+  priorities[2],
+  priorities[3]
+] as const;
+
 type ProjectGroup = {
   id: string;
   name: string;
@@ -60,6 +67,17 @@ function personDetail(person: Person) {
   if (person.company) return { icon: Building2, value: person.company };
   if (person.email) return { icon: Mail, value: person.email };
   return { icon: UserRound, value: "No company or email" };
+}
+
+function projectPriority(order: number) {
+  const named = sequencePriorityNames[order - 1];
+  if (named) return named;
+  return { id: `p${order}`, label: String(order), dot: "bg-stone-500", tone: "border-stone-300 bg-stone-50 text-stone-700" };
+}
+
+function taskPriority(task: Task, order: number, isProjectTask: boolean) {
+  if (isProjectTask) return projectPriority(order);
+  return priorities.find((item) => item.id === task.priority) ?? priorities[2];
 }
 
 export function TasksBoard({ userName }: { userName: string }) {
@@ -154,7 +172,15 @@ export function TasksBoard({ userName }: { userName: string }) {
               .map((project) => ({
                 ...project,
                 tasks: project.tasks.filter((task) => {
-                  const haystack = [person.full_name, project.name, task.title, task.description, task.status, task.priority]
+                  const haystack = [
+                    person.full_name,
+                    project.name,
+                    task.title,
+                    task.description,
+                    task.status,
+                    task.priority,
+                    task.project_id ? projectPriority(task.priority_order || 1).label : undefined
+                  ]
                     .filter(Boolean)
                     .join(" ")
                     .toLowerCase();
@@ -383,7 +409,7 @@ function ProjectSection({
     setOrder(project.tasks);
   }, [project.tasks]);
 
-  const highestPriority = order.find((task) => task.priority === "urgent" || task.priority === "high");
+  const topPriority = order.length > 0 && project.id !== "none" ? projectPriority(1) : null;
 
   const handleDrop = (targetId: string) => {
     if (!dragId || dragId === targetId) {
@@ -415,9 +441,9 @@ function ProjectSection({
           <span className="min-w-0">
             <span className="flex min-w-0 flex-wrap items-center gap-2">
               <span className="truncate text-sm font-semibold">{project.name}</span>
-              {highestPriority && (
+              {topPriority && (
                 <span className="rounded-md border border-amber/50 bg-amber/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber">
-                  {highestPriority.priority}
+                  {topPriority.label}
                 </span>
               )}
             </span>
@@ -461,6 +487,7 @@ function ProjectSection({
                   onDrop={() => handleDrop(task.id)}
                   onEdit={() => onEditTask(task)}
                   task={task}
+                  useProjectPriority={draggable}
                 />
               ))}
             </div>
@@ -482,7 +509,8 @@ function TaskRow({
   onDragOver,
   onDrop,
   onDragEnd,
-  onEdit
+  onEdit,
+  useProjectPriority
 }: {
   task: Task;
   index: number;
@@ -495,8 +523,9 @@ function TaskRow({
   onDrop: () => void;
   onDragEnd: () => void;
   onEdit: () => void;
+  useProjectPriority: boolean;
 }) {
-  const priority = priorities.find((item) => item.id === task.priority) ?? priorities[3];
+  const priority = taskPriority(task, index + 1, useProjectPriority);
   return (
     <article
       className={`group flex items-center gap-3 rounded-lg border bg-white px-3 py-2.5 shadow-sm transition ${
@@ -699,14 +728,14 @@ function TaskForm({
     >
       <div className="border-b border-stone-200 pb-2 md:col-span-3">
         <h3 className="text-base font-semibold">{initial ? "Edit task" : "New task"}</h3>
-        <p className="mt-1 text-sm text-stone-500">Assign it to a person, optionally place it inside a project, and set its sequence.</p>
+        <p className="mt-1 text-sm text-stone-500">Assign it to a person, optionally place it inside a project, and set its priority position.</p>
       </div>
       <label className="block text-sm font-medium md:col-span-2">
         Title
         <input className={inputClass} required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
       </label>
       <label className="block text-sm font-medium">
-        Label priority
+        Priority label
         <select className={inputClass} value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })}>
           {priorities.map((priority) => (
             <option key={priority.id} value={priority.id}>
@@ -742,7 +771,7 @@ function TaskForm({
         </select>
       </label>
       <label className="block text-sm font-medium">
-        Project order
+        Project priority position
         <input
           className={inputClass}
           min="1"
