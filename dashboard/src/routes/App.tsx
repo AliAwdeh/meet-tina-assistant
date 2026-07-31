@@ -5,15 +5,17 @@ import {
   FolderKanban,
   LayoutDashboard,
   Mail,
+  Menu,
   MessageCircle,
   Settings as SettingsIcon,
-  Users
+  Users,
+  X
 } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, shouldRetry } from "../api/client";
 import { ErrorBoundary } from "../components/ErrorBoundary";
-import { Button, LoadingPanel, secondaryButtonClass } from "../components/ui";
+import { LoadingPanel } from "../components/ui";
 import { Login } from "../pages/Login";
 import { Overview } from "../pages/Overview";
 import { Records } from "../pages/Records";
@@ -21,7 +23,9 @@ import { Conversations, Emails, Settings } from "../pages/StaticPages";
 import { TasksBoard } from "../pages/TasksBoard";
 import type { User } from "../types/domain";
 
-const nav = [
+const HOME: Page = "Home";
+
+const menu = [
   { id: "Overview", icon: LayoutDashboard },
   { id: "People", icon: Users },
   { id: "Projects", icon: FolderKanban },
@@ -33,10 +37,11 @@ const nav = [
   { id: "Settings", icon: SettingsIcon }
 ] as const;
 
-type Page = (typeof nav)[number]["id"];
+type Page = "Home" | (typeof menu)[number]["id"];
 
 export function App() {
-  const [page, setPage] = useState<Page>("Overview");
+  const [page, setPage] = useState<Page>(HOME);
+  const [menuOpen, setMenuOpen] = useState(false);
   const queryClient = useQueryClient();
   const me = useQuery({
     queryKey: ["me"],
@@ -65,52 +70,97 @@ export function App() {
     return <Login onAuthenticated={(user) => queryClient.setQueryData(["me"], user)} />;
   }
 
+  const goTo = (next: Page) => {
+    setPage(next);
+    setMenuOpen(false);
+  };
+
   return (
     <div className="min-h-screen bg-[#f7f4ee] text-ink">
-      <header className="border-b border-stone-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-normal">Meet Tina</h1>
-            <p className="text-sm text-stone-500">{me.data.name}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button onClick={() => setPage("Tasks")}>New task</Button>
-            <Button className={secondaryButtonClass} disabled={logout.isPending} onClick={() => logout.mutate()}>
-              Sign out
-            </Button>
-          </div>
+      <header className="sticky top-0 z-30 border-b border-stone-200/70 bg-[#f7f4ee]/85 backdrop-blur">
+        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-5 py-3.5">
+          <button className="flex items-center gap-2.5 text-left" onClick={() => goTo(HOME)} type="button">
+            <span className="grid h-9 w-9 place-items-center rounded-lg bg-ink text-sm font-bold text-mint">MT</span>
+            <span className="text-lg font-semibold tracking-tight">Meet Tina</span>
+          </button>
+          <button
+            aria-label="Open menu"
+            className="inline-flex h-10 items-center gap-2 rounded-lg border border-stone-300/80 bg-white px-3.5 text-sm font-medium text-stone-700 shadow-sm transition hover:border-ink hover:text-ink"
+            onClick={() => setMenuOpen(true)}
+            type="button"
+          >
+            <Menu size={18} />
+            <span className="hidden sm:inline">Menu</span>
+          </button>
         </div>
       </header>
-      <div className="mx-auto grid max-w-7xl gap-6 px-5 py-6 lg:grid-cols-[220px_1fr]">
-        <nav className="flex gap-2 overflow-x-auto lg:block lg:space-y-1">
-          {nav.map((item) => {
-            const Icon = item.icon;
-            return (
+
+      <main className="mx-auto max-w-5xl px-5 py-6">
+        <ErrorBoundary key={page}>{renderPage(page, me.data)}</ErrorBoundary>
+      </main>
+
+      {menuOpen && (
+        <div className="fixed inset-0 z-40">
+          <button
+            aria-label="Close menu"
+            className="absolute inset-0 bg-ink/30 backdrop-blur-sm"
+            onClick={() => setMenuOpen(false)}
+            type="button"
+          />
+          <aside className="absolute right-0 top-0 flex h-full w-80 max-w-[85vw] flex-col border-l border-stone-200 bg-[#f7f4ee] shadow-xl">
+            <div className="flex items-center justify-between px-5 py-4">
+              <div>
+                <p className="text-sm text-stone-500">Signed in as</p>
+                <p className="text-base font-semibold">{me.data.name}</p>
+              </div>
               <button
-                className={`flex h-10 min-w-fit items-center gap-2 rounded-md px-3 text-sm transition ${
-                  page === item.id ? "border border-ink bg-mint text-ink" : "border border-transparent bg-mint/10 text-stone-700 hover:border-mint/60 hover:bg-mint/20"
-                }`}
-                key={item.id}
-                onClick={() => setPage(item.id)}
-                title={item.id}
+                aria-label="Close menu"
+                className="grid h-9 w-9 place-items-center rounded-lg border border-stone-300/80 bg-white text-stone-600 transition hover:border-ink hover:text-ink"
+                onClick={() => setMenuOpen(false)}
+                type="button"
               >
-                <Icon size={17} />
-                <span>{item.id}</span>
+                <X size={18} />
               </button>
-            );
-          })}
-        </nav>
-        <main>
-          <ErrorBoundary key={page}>{renderPage(page)}</ErrorBoundary>
-        </main>
-      </div>
+            </div>
+            <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
+              {menu.map((item) => {
+                const Icon = item.icon;
+                const active = page === item.id || (page === HOME && item.id === "Tasks");
+                return (
+                  <button
+                    className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition ${
+                      active ? "bg-ink text-white" : "text-stone-700 hover:bg-white"
+                    }`}
+                    key={item.id}
+                    onClick={() => goTo(item.id)}
+                    type="button"
+                  >
+                    <Icon size={18} />
+                    <span>{item.id}</span>
+                  </button>
+                );
+              })}
+            </nav>
+            <div className="border-t border-stone-200 px-3 py-3">
+              <button
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-stone-300/80 bg-white px-3 py-2.5 text-sm font-medium text-stone-700 transition hover:border-coral hover:text-coral disabled:opacity-50"
+                disabled={logout.isPending}
+                onClick={() => logout.mutate()}
+                type="button"
+              >
+                Sign out
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
     </div>
   );
 }
 
-function renderPage(page: Page) {
+function renderPage(page: Page, user: User) {
+  if (page === "Home" || page === "Tasks") return <TasksBoard userName={user.name} />;
   if (page === "Overview") return <Overview />;
-  if (page === "Tasks") return <TasksBoard />;
   if (page === "People" || page === "Projects" || page === "Meetings" || page === "Reminders") return <Records title={page} />;
   if (page === "Emails") return <Emails />;
   if (page === "Conversations") return <Conversations />;
