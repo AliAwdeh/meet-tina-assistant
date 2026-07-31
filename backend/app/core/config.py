@@ -1,10 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("./data")
     media_max_bytes: int = 25_000_000
-    allowed_outbound_hosts: list[str] = Field(default_factory=list)
+    allowed_outbound_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     jwt_secret_key: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     passkey_rp_id: str = ""
     passkey_rp_name: str = "Meet Tina"
-    passkey_allowed_origins: list[str] = Field(default_factory=list)
+    passkey_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     ai_base_url: str = "https://langcc.maidstech.ai/v1"
     ai_api_key: str = ""
@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     n8n_email_webhook_url: str = ""
     n8n_callback_secret: str = ""
     n8n_outbound_token: str = ""
-    n8n_allowed_source_ips: list[str] = Field(default_factory=list)
+    n8n_allowed_source_ips: Annotated[list[str], NoDecode] = Field(default_factory=list)
     n8n_replay_window_seconds: int = 300
     n8n_timeout_seconds: float = 10.0
 
