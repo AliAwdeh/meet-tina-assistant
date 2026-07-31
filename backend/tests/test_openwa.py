@@ -519,6 +519,9 @@ def test_openwa_numeric_project_priority_order_update_sends_project_list(client:
         assert second.priority_order == 1
         email = db.scalar(select(Email).where(Email.subject == "Task updated: Second task"))
         assert email is not None
+        assert "Task: Second task" in email.text_body
+        assert "Project: Ops" in email.text_body
+        assert "Related person: Ali Awdeh" in email.text_body
         assert "Priority changed from High to Urgent" in email.text_body
         assert "Current priority list for Ops:" in email.text_body
         assert "Urgent: Second task (Ali Awdeh)" in email.text_body

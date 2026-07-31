@@ -1012,6 +1012,19 @@ def _project_priority_list(db: Session, project_id: str | None) -> str:
     return "\n".join(lines)
 
 
+def _task_email_context(db: Session, task: Task) -> str:
+    person = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
+    project = db.get(Project, task.project_id) if task.project_id else None
+    return "\n".join(
+        [
+            f"Task: {task.title}",
+            f"Project: {project.name if project else 'No project'}",
+            f"Related person: {person.full_name if person else 'Unassigned'}",
+            f"Priority: {_task_priority_name(task)}",
+        ]
+    )
+
+
 def _optional_project_choices(db: Session, person: Person | None, task: Task | None) -> str:
     if person is None or task is None or task.project_id is not None:
         return ""
@@ -1111,7 +1124,7 @@ async def _send_task_change_email(
         )
     if not people or not changes:
         return
-    body = f"The task \"{task.title}\" was updated.\n\n" + "\n".join(changes)
+    body = f'The task "{task.title}" was updated.\n\n{_task_email_context(db, task)}\n\n' + "\n".join(changes)
     priority_list = _project_priority_list(db, task.project_id)
     if priority_list:
         body += f"\n\n{priority_list}"
@@ -1131,15 +1144,7 @@ async def _send_task_created_email(db: Session, settings: Settings, message: Nor
     people = _task_notification_people(db, task)
     if not people:
         return
-    person = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
-    project = db.get(Project, task.project_id) if task.project_id else None
-    lines = [
-        f'The task "{task.title}" was created.',
-        "",
-        f"Assigned to: {person.full_name if person else 'Unassigned'}",
-        f"Project: {project.name if project else 'No project'}",
-        f"Priority: {_task_priority_name(task)}",
-    ]
+    lines = [f'The task "{task.title}" was created.', "", _task_email_context(db, task)]
     priority_list = _project_priority_list(db, task.project_id)
     if priority_list:
         lines.extend(["", priority_list])

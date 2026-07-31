@@ -559,13 +559,15 @@ function TaskRow({
       ) : (
         <span className="h-8 w-8 shrink-0" />
       )}
-      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-ink text-xs font-bold text-white">{index + 1}</span>
+      <span className="grid h-8 min-w-8 shrink-0 place-items-center rounded-md bg-ink px-2 text-xs font-bold text-white">
+        {useProjectPriority ? priority.label : index + 1}
+      </span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <h4 className="text-sm font-semibold leading-5 text-ink">{task.title}</h4>
           <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold ${priority.tone}`}>
             <span className={`h-1.5 w-1.5 rounded-full ${priority.dot}`} />
-            {priority.label}
+            {useProjectPriority ? `Priority ${priority.label}` : priority.label}
           </span>
           {task.status !== "open" && (
             <span className="inline-flex items-center gap-1 rounded-md border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] text-stone-500">

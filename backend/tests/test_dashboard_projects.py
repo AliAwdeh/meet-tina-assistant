@@ -70,6 +70,9 @@ def test_dashboard_projects_and_priority_change_email(client: TestClient) -> Non
         email = db.scalar(select(Email).where(Email.subject == "Task priority changed: Confirm vendor pricing"))
         assert email is not None
         assert email.status == "queued"
+        assert "Task: Confirm vendor pricing" in email.text_body
+        assert "Project: Ops Cleanup" in email.text_body
+        assert "Related person: Rami Mansour" in email.text_body
         assert "Priority changed from High to Urgent" in email.text_body
         recipient = db.scalar(select(EmailRecipient).where(EmailRecipient.email_id == email.id))
         assert recipient is not None
@@ -119,6 +122,9 @@ def test_dashboard_project_priority_order_email_includes_full_project_list(clien
         ]
         email = db.scalar(select(Email).where(Email.subject == "Task priority changed: Third item"))
         assert email is not None
+        assert "Task: Third item" in email.text_body
+        assert "Project: Priority Project" in email.text_body
+        assert "Related person: Priority Owner" in email.text_body
         assert "Priority changed from Medium to Urgent" in email.text_body
         assert "Current priority list for Priority Project:" in email.text_body
         assert "Urgent: Third item (Priority Owner)" in email.text_body
@@ -147,6 +153,9 @@ def test_dashboard_task_creation_email_includes_project_priority_list(client: Te
         assert email is not None
         assert email.status == "queued"
         assert 'The task "Creation email task" was created.' in email.text_body
+        assert "Task: Creation email task" in email.text_body
+        assert "Project: Creation Project" in email.text_body
+        assert "Related person: Create Notify" in email.text_body
         assert "Priority: Urgent" in email.text_body
         assert "Current priority list for Creation Project:" in email.text_body
         assert "Urgent: Creation email task (Create Notify)" in email.text_body
