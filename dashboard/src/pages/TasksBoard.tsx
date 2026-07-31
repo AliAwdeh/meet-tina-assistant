@@ -3,12 +3,14 @@ import {
   AlertCircle,
   ArrowDown,
   ArrowUp,
+  Building2,
   CalendarDays,
   CheckSquare,
   ChevronDown,
   ChevronRight,
   Edit3,
   FolderKanban,
+  Mail,
   Plus,
   Save,
   Search,
@@ -49,6 +51,17 @@ function taskOrder(task: Task, index: number) {
 
 function groupKey(personId: string, projectId: string) {
   return `${personId}:${projectId}`;
+}
+
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return (parts[0]?.[0] ?? "?") + (parts[1]?.[0] ?? "");
+}
+
+function personDetail(person: Person) {
+  if (person.company) return { icon: Building2, value: person.company };
+  if (person.email) return { icon: Mail, value: person.email };
+  return { icon: UserRound, value: "No company or email" };
 }
 
 export function TasksBoard() {
@@ -162,34 +175,39 @@ export function TasksBoard() {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold">Tasks</h2>
-          <p className="text-sm text-stone-500">People, projects, numbered priority sequence</p>
+      <div className="overflow-hidden border border-stone-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-stone-100 px-5 py-5">
+          <div>
+            <h2 className="text-2xl font-semibold">Tasks</h2>
+            <p className="mt-1 text-sm text-stone-500">People, projects, numbered priority sequence</p>
+          </div>
+          <Button className={secondaryButtonClass} onClick={() => openCreateForm({ personId: groups[0]?.person.id ?? "", projectId: "" })}>
+            <Plus size={16} />
+            New task
+          </Button>
         </div>
-        <Button className={secondaryButtonClass} onClick={() => openCreateForm({ personId: groups[0]?.person.id ?? "", projectId: "" })}>
-          <Plus size={16} />
-          New task
-        </Button>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-[1fr_auto_auto]">
-        <label className="flex h-11 min-w-0 items-center gap-2 border border-stone-300 bg-white px-3 text-sm shadow-sm focus-within:border-ink">
-          <Search className="shrink-0 text-stone-500" size={17} />
-          <input
-            className="h-9 w-full bg-transparent outline-none"
-            placeholder="Search people, projects, or tasks"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </label>
-        <div className="flex h-11 items-center gap-2 border border-stone-200 bg-white px-3 text-sm text-stone-600">
-          <UserRound className="text-mint" size={16} />
-          {groups.length} people
-        </div>
-        <div className="flex h-11 items-center gap-2 border border-stone-200 bg-white px-3 text-sm text-stone-600">
-          <FolderKanban className="text-mint" size={16} />
-          {totalProjects} projects · {totalTasks} tasks
+        <div className="grid gap-3 bg-[#fbfaf6] px-5 py-4 md:grid-cols-[1fr_auto_auto]">
+          <label className="flex h-11 min-w-0 items-center gap-2 border border-stone-300 bg-white px-3 text-sm shadow-sm focus-within:border-ink">
+            <Search className="shrink-0 text-stone-500" size={17} />
+            <input
+              className="h-9 w-full bg-transparent outline-none"
+              placeholder="Search people, projects, or tasks"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </label>
+          <div className="flex h-11 items-center gap-2 border border-stone-200 bg-white px-3 text-sm font-medium text-stone-700 shadow-sm">
+            <span className="grid h-7 w-7 place-items-center bg-mint/15 text-mint">
+              <UserRound size={15} />
+            </span>
+            {groups.length} people
+          </div>
+          <div className="flex h-11 items-center gap-2 border border-stone-200 bg-white px-3 text-sm font-medium text-stone-700 shadow-sm">
+            <span className="grid h-7 w-7 place-items-center bg-amber/15 text-amber">
+              <FolderKanban size={15} />
+            </span>
+            {totalProjects} projects · {totalTasks} tasks
+          </div>
         </div>
       </div>
 
@@ -208,7 +226,7 @@ export function TasksBoard() {
       )}
 
       {(creating || editing) && (
-        <div className="border-y border-stone-200 bg-white/80 p-4">
+        <div className="border border-stone-200 bg-white p-4 shadow-sm">
           <TaskForm
             key={`${editing?.id ?? "new"}:${formDefaults.personId}:${formDefaults.projectId}`}
             initial={editing}
@@ -227,32 +245,40 @@ export function TasksBoard() {
       )}
 
       {groups.length === 0 ? (
-        <div className="border-y border-stone-200 bg-white/80 px-4 py-8 text-sm text-stone-500">No people or tasks match the current search.</div>
+        <div className="border border-dashed border-stone-300 bg-white px-5 py-10 text-center text-sm text-stone-500">
+          No people or tasks match the current search.
+        </div>
       ) : (
         <div className="space-y-4">
           {groups.map((group) => {
             const personCollapsed = collapsedPeople[group.person.id] ?? false;
+            const detail = personDetail(group.person);
+            const DetailIcon = detail.icon;
             return (
               <section className="overflow-hidden border border-stone-200 bg-white shadow-sm" key={group.person.id}>
                 <button
-                  className="flex w-full items-center justify-between gap-3 bg-[#fbfaf6] px-4 py-4 text-left transition hover:bg-mint/10"
+                  className="flex w-full items-center justify-between gap-3 border-l-4 border-mint bg-[#fbfaf6] px-4 py-4 text-left transition hover:bg-mint/10"
                   onClick={() => setCollapsedPeople((current) => ({ ...current, [group.person.id]: !personCollapsed }))}
                   type="button"
                 >
                   <span className="flex min-w-0 items-center gap-3">
-                    <span className="grid h-10 w-10 shrink-0 place-items-center border border-mint/50 bg-mint/15 text-mint">
-                      <UserRound size={19} />
+                    <span className="grid h-12 w-12 shrink-0 place-items-center border border-mint/50 bg-mint/15 text-sm font-bold text-ink">
+                      {initials(group.person.full_name).toUpperCase()}
                     </span>
                     <span className="min-w-0">
-                      <span className="block truncate text-base font-semibold">{group.person.full_name}</span>
-                      <span className="block truncate text-sm text-stone-500">
-                        {group.person.company || group.person.email || "No company or email"} · {group.taskCount} tasks
+                      <span className="block truncate text-lg font-semibold">{group.person.full_name}</span>
+                      <span className="mt-1 flex min-w-0 items-center gap-1 text-sm text-stone-500">
+                        <DetailIcon className="shrink-0" size={14} />
+                        <span className="truncate">{detail.value}</span>
                       </span>
                     </span>
                   </span>
-                  <span className="flex shrink-0 items-center gap-3 text-sm text-stone-500">
-                    {group.projects.filter((project) => project.id !== "none").length} projects
-                    {personCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
+                  <span className="flex shrink-0 items-center gap-3">
+                    <span className="hidden border border-stone-200 bg-white px-3 py-1 text-sm font-medium text-stone-600 sm:inline-flex">
+                      {group.projects.filter((project) => project.id !== "none").length} projects
+                    </span>
+                    <span className="border border-stone-200 bg-white px-3 py-1 text-sm font-medium text-stone-600">{group.taskCount} tasks</span>
+                    <span className="text-stone-500">{personCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}</span>
                   </span>
                 </button>
                 {!personCollapsed && (
@@ -308,30 +334,42 @@ function ProjectSection({
   onMoveDown: (task: Task, index: number) => void;
   onEditTask: (task: Task) => void;
 }) {
+  const highestPriority = project.tasks.find((task) => task.priority === "urgent" || task.priority === "high");
   return (
     <div className="bg-white">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-        <button className="flex min-w-0 items-center gap-2 text-left" onClick={onToggle} type="button">
-          {isCollapsed ? <ChevronRight className="shrink-0 text-stone-500" size={17} /> : <ChevronDown className="shrink-0 text-stone-500" size={17} />}
-          <FolderKanban className="shrink-0 text-mint" size={18} />
+      <div className="grid gap-3 px-4 py-3 md:grid-cols-[1fr_auto] md:items-center">
+        <button className="flex min-w-0 items-center gap-3 text-left" onClick={onToggle} type="button">
+          <span className="grid h-9 w-9 shrink-0 place-items-center border border-stone-200 bg-[#f7f4ee] text-stone-600">
+            {isCollapsed ? <ChevronRight size={17} /> : <ChevronDown size={17} />}
+          </span>
+          <span className="grid h-9 w-9 shrink-0 place-items-center border border-mint/40 bg-mint/10 text-mint">
+            <FolderKanban size={17} />
+          </span>
           <span className="min-w-0">
-            <span className="block truncate text-sm font-semibold">{project.name}</span>
-            <span className="block text-xs text-stone-500">
+            <span className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="truncate text-sm font-semibold">{project.name}</span>
+              {highestPriority && (
+                <span className="border border-amber/60 bg-amber/10 px-2 py-0.5 text-xs font-semibold text-amber">
+                  {highestPriority.priority}
+                </span>
+              )}
+            </span>
+            <span className="mt-1 block text-xs text-stone-500">
               {project.tasks.length} tasks{project.id === "none" ? "" : ` · ${project.status}`}
             </span>
           </span>
         </button>
-        <Button className="h-9 px-3" onClick={onAddTask} type="button">
+        <Button className="h-9 justify-self-start px-3 md:justify-self-end" onClick={onAddTask} type="button">
           <Plus size={15} />
           Task
         </Button>
       </div>
       {!isCollapsed && (
-        <div className="border-t border-stone-100">
+        <div className="border-t border-stone-100 bg-[#fcfbf8]">
           {project.tasks.length === 0 ? (
-            <div className="px-4 py-6 text-sm text-stone-500">No tasks here yet.</div>
+            <div className="mx-4 mb-4 border border-dashed border-stone-300 bg-white px-4 py-5 text-sm text-stone-500">No tasks here yet.</div>
           ) : (
-            <div className="divide-y divide-stone-100">
+            <div className="space-y-2 p-3">
               {project.tasks.map((task, index) => (
                 <TaskRow
                   canMoveDown={index < project.tasks.length - 1 && project.id !== "none"}
@@ -374,13 +412,13 @@ function TaskRow({
 }) {
   const priorityTone = priorities.find((priority) => priority.id === task.priority)?.tone ?? "border-stone-300 bg-stone-50 text-stone-700";
   return (
-    <article className="grid gap-3 px-4 py-3 md:grid-cols-[64px_1fr_auto] md:items-center">
-      <div className="flex h-10 w-14 items-center justify-center border border-ink bg-mint text-sm font-bold text-ink">
+    <article className="grid gap-3 border border-stone-200 bg-white px-3 py-3 shadow-sm transition hover:border-mint/60 md:grid-cols-[72px_1fr_auto] md:items-center">
+      <div className="flex h-12 w-16 items-center justify-center border border-ink bg-[#182026] text-sm font-bold text-white">
         #{taskOrder(task, index)}
       </div>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
-          <h4 className="text-sm font-semibold leading-5">{task.title}</h4>
+          <h4 className="text-sm font-semibold leading-5 text-ink">{task.title}</h4>
           <span className={`inline-flex h-7 items-center border px-2 text-xs font-semibold ${priorityTone}`}>{task.priority}</span>
           {task.status !== "open" && (
             <span className="inline-flex h-7 items-center gap-1 border border-stone-200 bg-white px-2 text-xs text-stone-600">
@@ -399,7 +437,7 @@ function TaskRow({
           {task.description && <span className="truncate">{task.description}</span>}
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 md:flex-nowrap">
         <button className={smallEditButtonClass} disabled={!canMoveUp || isMoving} onClick={onMoveUp} title="Move up" type="button">
           <ArrowUp size={14} />
           Up
@@ -467,6 +505,10 @@ function TaskForm({
         });
       }}
     >
+      <div className="border-b border-stone-200 pb-2 md:col-span-3">
+        <h3 className="text-base font-semibold">{initial ? "Edit task" : "New task"}</h3>
+        <p className="mt-1 text-sm text-stone-500">Assign it to a person, optionally place it inside a project, and set its sequence.</p>
+      </div>
       <label className="block text-sm font-medium md:col-span-2">
         Title
         <input className={inputClass} required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
