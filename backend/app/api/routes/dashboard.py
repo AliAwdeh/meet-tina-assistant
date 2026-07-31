@@ -253,10 +253,11 @@ def tasks(
 
 
 @router.post("/tasks", response_model=TaskRead)
-def create_task(
+async def create_task(
     payload: TaskCreate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ) -> TaskRead:
     if payload.assigned_person_id and db.get(Person, payload.assigned_person_id) is None:
         raise HTTPException(status_code=404, detail="Person not found")
@@ -265,6 +266,7 @@ def create_task(
     task = records.create_task(db, payload, created_by=user.id)
     _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=payload.priority_order)
     write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="create_task", entity_type="task", entity_id=task.id)
+    await _send_task_created_email(db, settings, user, task)
     db.commit()
     db.refresh(task)
     return _task_read(db, task)
@@ -358,6 +360,46 @@ async def _send_task_change_email(
         to_people=people,
         subject=subject,
         text_body=body,
+        related_task=task,
+    )
+
+
+async def _send_task_created_email(
+    db: Session,
+    settings: Settings,
+    user: User,
+    task: Task,
+) -> None:
+    if not _task_change_emails_enabled(db):
+        return
+    people = _task_notification_people(db, task)
+    if not people:
+        return
+    person = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
+    project = db.get(Project, task.project_id) if task.project_id else None
+    lines = [
+        f'The task "{task.title}" was created.',
+        "",
+        f"Assigned to: {person.full_name if person else 'Unassigned'}",
+        f"Project: {project.name if project else 'No project'}",
+        f"Priority: {task.priority}",
+    ]
+    if project and task.priority_order > 0:
+        lines.append(f"Project order: {task.priority_order}")
+    priority_list = _project_priority_list(db, task.project_id)
+    if priority_list:
+        lines.extend(["", priority_list])
+    await send_email_tool(
+        ToolContext(
+            db=db,
+            actor_type="dashboard_user",
+            actor_id=user.id,
+            request_id=f"task-create:{task.id}:{datetime.now(UTC).isoformat()}",
+        ),
+        settings,
+        to_people=people,
+        subject=f"Task created: {task.title}",
+        text_body="\n".join(lines),
         related_task=task,
     )
 

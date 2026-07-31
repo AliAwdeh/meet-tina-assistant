@@ -15,12 +15,13 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.agent.tools.registry import ToolContext, create_reminder_tool, create_task_tool, send_email_tool
 from app.core.config import Settings
 from app.integrations.ai.client import chat_model, structured_json
-from app.models.entities import Conversation, Email, EmailRecipient, Meeting, Message, Person, Project, Reminder, Task
+from app.models.entities import AppSetting, Conversation, Email, EmailRecipient, Meeting, Message, Person, Project, Reminder, Task
 from app.schemas.agent import ActionPlan, AgentResult, ClassificationResult, ExtractedAction
-from app.schemas.domain import NormalizedMessage, PersonCreate, ReminderCreate, TaskCreate
+from app.schemas.domain import NormalizedMessage, NotificationSettings, PersonCreate, ReminderCreate, TaskCreate
 
 logger = logging.getLogger(__name__)
 EMAIL_RE = re.compile(r"(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})", re.IGNORECASE)
+NOTIFICATION_SETTINGS_KEY = "notification_settings"
 
 
 class ResponsibilityParts(TypedDict, total=False):
@@ -1008,6 +1009,28 @@ def _optional_project_choices(db: Session, person: Person | None, task: Task | N
     return f" No project attached. Available projects for {person.full_name}: {names}."
 
 
+def _task_change_emails_enabled(db: Session) -> bool:
+    row = db.get(AppSetting, NOTIFICATION_SETTINGS_KEY)
+    value = row.value if row is not None else {}
+    return NotificationSettings.model_validate(value).task_change_email_notifications
+
+
+def _task_notification_people(db: Session, task: Task, old_project_id: str | None = None) -> list[Person]:
+    people_by_id: dict[str, Person] = {}
+    if task.assigned_person_id:
+        person = db.get(Person, task.assigned_person_id)
+        if person is not None:
+            people_by_id[person.id] = person
+    for project_id in {task.project_id, old_project_id}:
+        if not project_id:
+            continue
+        project = db.get(Project, project_id)
+        project_person = db.get(Person, project.person_id) if project else None
+        if project_person is not None:
+            people_by_id[project_person.id] = project_person
+    return list(people_by_id.values())
+
+
 def _append_action_summary(state: AssistantState, summary: str) -> None:
     state["action_summaries"] = state.get("action_summaries", []) + [summary]
 
@@ -1051,18 +1074,9 @@ async def _send_task_change_email(
     old_project_id: str | None = None,
     old_priority_order: int | None = None,
 ) -> None:
-    people_by_id: dict[str, Person] = {}
-    if task.assigned_person_id:
-        person = db.get(Person, task.assigned_person_id)
-        if person is not None:
-            people_by_id[person.id] = person
-    for project_id in {task.project_id, old_project_id}:
-        if not project_id:
-            continue
-        project = db.get(Project, project_id)
-        project_person = db.get(Person, project.person_id) if project else None
-        if project_person is not None:
-            people_by_id[project_person.id] = project_person
+    if not _task_change_emails_enabled(db):
+        return
+    people = _task_notification_people(db, task, old_project_id=old_project_id)
     changes: list[str] = []
     if old_priority is not None and old_priority != task.priority:
         changes.append(f"Priority changed from {old_priority} to {task.priority}.")
@@ -1075,7 +1089,7 @@ async def _send_task_change_email(
             f"Project changed from {old_project.name if old_project else 'No project'} "
             f"to {new_project.name if new_project else 'No project'}."
         )
-    if not people_by_id or not changes:
+    if not people or not changes:
         return
     body = f"The task \"{task.title}\" was updated.\n\n" + "\n".join(changes)
     priority_list = _project_priority_list(db, task.project_id)
@@ -1084,9 +1098,39 @@ async def _send_task_change_email(
     await send_email_tool(
         ToolContext(db=db, actor_type="openwa", actor_id=message.sender_phone, request_id=f"task-update:{message.external_message_id}"),
         settings,
-        to_people=list(people_by_id.values()),
+        to_people=people,
         subject=f"Task updated: {task.title}",
         text_body=body,
+        related_task=task,
+    )
+
+
+async def _send_task_created_email(db: Session, settings: Settings, message: NormalizedMessage, task: Task) -> None:
+    if not _task_change_emails_enabled(db):
+        return
+    people = _task_notification_people(db, task)
+    if not people:
+        return
+    person = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
+    project = db.get(Project, task.project_id) if task.project_id else None
+    lines = [
+        f'The task "{task.title}" was created.',
+        "",
+        f"Assigned to: {person.full_name if person else 'Unassigned'}",
+        f"Project: {project.name if project else 'No project'}",
+        f"Priority: {task.priority}",
+    ]
+    if project and task.priority_order > 0:
+        lines.append(f"Project order: {task.priority_order}")
+    priority_list = _project_priority_list(db, task.project_id)
+    if priority_list:
+        lines.extend(["", priority_list])
+    await send_email_tool(
+        ToolContext(db=db, actor_type="openwa", actor_id=message.sender_phone, request_id=f"task-create:{message.external_message_id}"),
+        settings,
+        to_people=people,
+        subject=f"Task created: {task.title}",
+        text_body="\n".join(lines),
         related_task=task,
     )
 
@@ -1245,6 +1289,7 @@ async def task_agent(state: AssistantState) -> AssistantState:
             task = db.get(Task, result["id"])
             if task is not None:
                 _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=action.priority_order)
+                await _send_task_created_email(db, state["settings"], message, task)
             current_message = db.scalar(select(Message).where(Message.external_message_id == message.external_message_id))
             if task is not None and current_message is not None:
                 task.source_message_id = current_message.id

@@ -41,6 +41,7 @@ type PersonGroup = {
 };
 
 type FormDefaults = { personId: string; projectId: string };
+type ProjectFormDefaults = { personId: string };
 
 function firstName(name: string) {
   return name.trim().split(/\s+/)[0] || "there";
@@ -67,7 +68,9 @@ export function TasksBoard({ userName }: { userName: string }) {
   const [openProjects, setOpenProjects] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<Task | null>(null);
   const [creating, setCreating] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
   const [formDefaults, setFormDefaults] = useState<FormDefaults>({ personId: "", projectId: "" });
+  const [projectDefaults, setProjectDefaults] = useState<ProjectFormDefaults>({ personId: "" });
   const [search, setSearch] = useState("");
   const tasks = useQuery({
     queryKey: ["Tasks"],
@@ -91,6 +94,16 @@ export function TasksBoard({ userName }: { userName: string }) {
       setEditing(null);
       setCreating(false);
       void queryClient.invalidateQueries({ queryKey: ["Tasks"] });
+      void queryClient.invalidateQueries({ queryKey: ["summary"] });
+    }
+  });
+  const saveProject = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => apiPost<Project>("/api/dashboard/projects", payload),
+    onSuccess: (project) => {
+      setCreatingProject(false);
+      setOpenPeople((current) => ({ ...current, [project.person_id]: true }));
+      setOpenProjects((current) => ({ ...current, [groupKey(project.person_id, project.id)]: true }));
+      void queryClient.invalidateQueries({ queryKey: ["Projects"] });
       void queryClient.invalidateQueries({ queryKey: ["summary"] });
     }
   });
@@ -159,12 +172,21 @@ export function TasksBoard({ userName }: { userName: string }) {
       .filter((group) => !normalizedSearch || group.projects.length > 0 || group.person.full_name.toLowerCase().includes(normalizedSearch));
   }, [people.data, projects.data, search, tasks.data]);
 
+  const formPeople = (people.data ?? []).filter((person) => person.active);
   const totalTasks = groups.reduce((count, group) => count + group.taskCount, 0);
 
   const openCreateForm = (defaults: FormDefaults) => {
     setEditing(null);
+    setCreatingProject(false);
     setFormDefaults(defaults);
     setCreating(true);
+  };
+
+  const openCreateProject = (defaults: ProjectFormDefaults) => {
+    setCreating(false);
+    setEditing(null);
+    setProjectDefaults(defaults);
+    setCreatingProject(true);
   };
 
   if (tasks.isLoading || projects.isLoading || people.isLoading) return <LoadingPanel label="Loading your board" />;
@@ -199,13 +221,19 @@ export function TasksBoard({ userName }: { userName: string }) {
             </button>
           )}
         </label>
-        <Button className="h-12 rounded-lg" onClick={() => openCreateForm({ personId: groups[0]?.person.id ?? "", projectId: "" })}>
-          <Plus size={17} />
-          New task
-        </Button>
+        <div className="flex gap-2">
+          <Button className="h-12 rounded-lg" onClick={() => openCreateForm({ personId: formPeople[0]?.id ?? "", projectId: "" })}>
+            <Plus size={17} />
+            New task
+          </Button>
+          <Button className={`${secondaryButtonClass} h-12 rounded-lg`} onClick={() => openCreateProject({ personId: formPeople[0]?.id ?? "" })}>
+            <FolderKanban size={17} />
+            New project
+          </Button>
+        </div>
       </div>
 
-      {(tasks.isError || projects.isError || people.isError || saveTask.isError || reorderTask.isError) && (
+      {(tasks.isError || projects.isError || people.isError || saveTask.isError || saveProject.isError || reorderTask.isError) && (
         <Notice title="Something needs attention">
           {tasks.isError
             ? errorMessage(tasks.error)
@@ -215,7 +243,9 @@ export function TasksBoard({ userName }: { userName: string }) {
                 ? errorMessage(people.error)
                 : saveTask.isError
                   ? errorMessage(saveTask.error)
-                  : errorMessage(reorderTask.error)}
+                  : saveProject.isError
+                    ? errorMessage(saveProject.error)
+                    : errorMessage(reorderTask.error)}
         </Notice>
       )}
 
@@ -225,7 +255,7 @@ export function TasksBoard({ userName }: { userName: string }) {
             key={`${editing?.id ?? "new"}:${formDefaults.personId}:${formDefaults.projectId}`}
             initial={editing}
             isSaving={saveTask.isPending}
-            people={(people.data ?? []).filter((person) => person.active)}
+            people={formPeople}
             projects={projects.data ?? []}
             defaultPersonId={formDefaults.personId}
             defaultProjectId={formDefaults.projectId}
@@ -234,6 +264,19 @@ export function TasksBoard({ userName }: { userName: string }) {
               setEditing(null);
             }}
             onSave={(payload) => saveTask.mutate(payload)}
+          />
+        </div>
+      )}
+
+      {creatingProject && (
+        <div className="rounded-lg border border-stone-200/80 bg-white p-5 shadow-sm">
+          <ProjectForm
+            key={projectDefaults.personId}
+            defaultPersonId={projectDefaults.personId}
+            isSaving={saveProject.isPending}
+            people={formPeople}
+            onCancel={() => setCreatingProject(false)}
+            onSave={(payload) => saveProject.mutate(payload)}
           />
         </div>
       )}
@@ -251,26 +294,36 @@ export function TasksBoard({ userName }: { userName: string }) {
             const projectCount = group.projects.filter((project) => project.id !== "none").length;
             return (
               <section className="overflow-hidden rounded-lg border border-stone-200/80 bg-white shadow-sm" key={group.person.id}>
-                <button
-                  className="flex w-full items-center gap-4 px-4 py-4 text-left transition hover:bg-stone-50/70"
-                  onClick={() => setOpenPeople((current) => ({ ...current, [group.person.id]: !personOpen }))}
-                  type="button"
-                >
-                  <ChevronRight className={`shrink-0 text-stone-400 transition-transform ${personOpen ? "rotate-90" : ""}`} size={20} />
-                  <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-mint/15 text-sm font-bold text-ink">
-                    {initials(group.person.full_name)}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-base font-semibold">{group.person.full_name}</span>
-                    <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-sm text-stone-500">
-                      <DetailIcon className="shrink-0" size={14} />
-                      <span className="truncate">{detail.value}</span>
+                <div className="flex items-center gap-2 px-4 py-4 transition hover:bg-stone-50/70">
+                  <button
+                    className="flex min-w-0 flex-1 items-center gap-4 text-left"
+                    onClick={() => setOpenPeople((current) => ({ ...current, [group.person.id]: !personOpen }))}
+                    type="button"
+                  >
+                    <ChevronRight className={`shrink-0 text-stone-400 transition-transform ${personOpen ? "rotate-90" : ""}`} size={20} />
+                    <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-mint/15 text-sm font-bold text-ink">
+                      {initials(group.person.full_name)}
                     </span>
-                  </span>
-                  <span className="shrink-0 rounded-md bg-stone-100 px-3 py-1 text-xs font-medium text-stone-600">
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-base font-semibold">{group.person.full_name}</span>
+                      <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-sm text-stone-500">
+                        <DetailIcon className="shrink-0" size={14} />
+                        <span className="truncate">{detail.value}</span>
+                      </span>
+                    </span>
+                  </button>
+                  <span className="hidden shrink-0 rounded-md bg-stone-100 px-3 py-1 text-xs font-medium text-stone-600 sm:inline-flex">
                     {projectCount} {projectCount === 1 ? "project" : "projects"} · {group.taskCount} {group.taskCount === 1 ? "task" : "tasks"}
                   </span>
-                </button>
+                  <button
+                    className="inline-flex h-9 shrink-0 items-center gap-1 rounded-md border border-stone-200 px-2.5 text-xs font-medium text-stone-600 transition hover:border-ink hover:text-ink"
+                    onClick={() => openCreateProject({ personId: group.person.id })}
+                    type="button"
+                  >
+                    <Plus size={14} />
+                    Project
+                  </button>
+                </div>
                 {personOpen && (
                   <div className="space-y-1.5 border-t border-stone-100 bg-stone-50/40 px-3 py-3">
                     {group.projects.map((project) => {
@@ -518,6 +571,84 @@ function TaskRow({
 
 const inputClass = "mt-1 h-10 w-full rounded-lg border border-stone-300 bg-white px-3 text-sm outline-none transition focus:border-ink";
 const textareaClass = "mt-1 min-h-20 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-ink";
+
+function ProjectForm({
+  isSaving,
+  people,
+  defaultPersonId,
+  onCancel,
+  onSave
+}: {
+  isSaving: boolean;
+  people: Person[];
+  defaultPersonId: string;
+  onCancel: () => void;
+  onSave: (payload: Record<string, unknown>) => void;
+}) {
+  const [form, setForm] = useState({
+    person_id: defaultPersonId || people[0]?.id || "",
+    name: "",
+    description: "",
+    status: "active"
+  });
+  return (
+    <form
+      className="grid gap-3 md:grid-cols-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave({
+          person_id: form.person_id,
+          name: form.name,
+          description: form.description || null,
+          status: form.status
+        });
+      }}
+    >
+      <div className="border-b border-stone-200 pb-2 md:col-span-3">
+        <h3 className="text-base font-semibold">New project</h3>
+        <p className="mt-1 text-sm text-stone-500">Create it under a person, then add tasks inside it.</p>
+      </div>
+      <label className="block text-sm font-medium">
+        Person
+        <select className={inputClass} required value={form.person_id} onChange={(event) => setForm({ ...form, person_id: event.target.value })}>
+          {people.map((person) => (
+            <option key={person.id} value={person.id}>
+              {person.full_name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block text-sm font-medium md:col-span-2">
+        Project name
+        <input className={inputClass} required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+      </label>
+      <label className="block text-sm font-medium">
+        Status
+        <select className={inputClass} value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
+          {["active", "paused", "completed", "cancelled"].map((status) => (
+            <option key={status} value={status}>
+              {status}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block text-sm font-medium md:col-span-2">
+        Description
+        <textarea className={textareaClass} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+      </label>
+      <div className="flex items-end gap-2 md:col-span-3">
+        <Button disabled={isSaving || !people.length} type="submit">
+          <Save size={16} />
+          {isSaving ? "Saving" : "Save"}
+        </Button>
+        <Button className={secondaryButtonClass} disabled={isSaving} onClick={onCancel} type="button">
+          <X size={16} />
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
 
 function TaskForm({
   initial,

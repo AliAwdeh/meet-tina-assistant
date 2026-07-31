@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.integrations.n8n.client import N8nClient
-from app.models.entities import Email, EmailRecipient, Person, Task
+from app.models.entities import Email, EmailRecipient, N8nRequest, Person, Task
 from app.repositories import records
 from app.schemas.domain import ReminderCreate, TaskCreate
 from app.schemas.integrations import EmailContact, N8nEmailPayload
@@ -101,7 +101,19 @@ async def send_email_tool(
     context.db.flush()
     for person in recipients:
         context.db.add(EmailRecipient(email_id=email.id, person_id=person.id, email_address=person.email or "", recipient_type="to"))
-    n8n_request = await N8nClient(settings).send_email(context.db, payload)
+    try:
+        n8n_request = await N8nClient(settings).send_email(context.db, payload)
+    except Exception as exc:
+        n8n_request = N8nRequest(
+            request_id=payload.request_id,
+            operation=payload.operation,
+            status="failed",
+            payload=payload.model_dump(mode="json"),
+            response={"error": type(exc).__name__, "detail": str(exc)[:1000]},
+            idempotency_key=payload.idempotency_key,
+        )
+        context.db.add(n8n_request)
+        context.db.flush()
     email.n8n_request_id = n8n_request.request_id
     email.status = n8n_request.status
     ok = n8n_request.status != "failed"

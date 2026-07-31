@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     n8n_outbound_token: str = ""
     n8n_allowed_source_ips: list[str] = Field(default_factory=list)
     n8n_replay_window_seconds: int = 300
+    n8n_timeout_seconds: float = 10.0
 
     internal_worker_token: str = "change-worker-token"
     email_approval_mode: Literal["draft_only", "confirm", "auto"] = "auto"

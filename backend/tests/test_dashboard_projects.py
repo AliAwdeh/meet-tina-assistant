@@ -116,6 +116,34 @@ def test_dashboard_project_priority_order_email_includes_full_project_list(clien
         assert "3. Second item (Priority Owner)" in email.text_body
 
 
+def test_dashboard_task_creation_email_includes_project_priority_list(client: TestClient) -> None:
+    _login(client)
+    person_response = client.post("/api/dashboard/people", json={"full_name": "Create Notify", "email": "create-notify@example.com"})
+    assert person_response.status_code == 200
+    person = person_response.json()
+    project_response = client.post("/api/dashboard/projects", json={"person_id": person["id"], "name": "Creation Project"})
+    assert project_response.status_code == 200
+    project = project_response.json()
+
+    task_response = client.post(
+        "/api/dashboard/tasks",
+        json={"title": "Creation email task", "assigned_person_id": person["id"], "project_id": project["id"], "priority": "high"},
+    )
+    assert task_response.status_code == 200
+    assert task_response.json()["priority_order"] == 1
+
+    with SessionLocal() as db:
+        email = db.scalar(select(Email).where(Email.subject == "Task created: Creation email task"))
+        assert email is not None
+        assert email.status == "queued"
+        assert 'The task "Creation email task" was created.' in email.text_body
+        assert "Current priority list for Creation Project:" in email.text_body
+        assert "1. Creation email task (Create Notify)" in email.text_body
+        recipient = db.scalar(select(EmailRecipient).where(EmailRecipient.email_id == email.id))
+        assert recipient is not None
+        assert recipient.email_address == "create-notify@example.com"
+
+
 def test_dashboard_updates_people_projects_and_moves_tasks(client: TestClient) -> None:
     _login(client)
     person_response = client.post("/api/dashboard/people", json={"full_name": "Nour Haddad", "email": "nour@example.com"})
