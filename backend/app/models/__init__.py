@@ -11,6 +11,7 @@ from app.models.entities import (
     MeetingParticipant,
     Message,
     N8nRequest,
+    PasskeyChallenge,
     Person,
     PersonGoal,
     Project,
@@ -19,6 +20,7 @@ from app.models.entities import (
     SchedulerJob,
     Task,
     User,
+    UserPasskey,
     UserSession,
 )
 
@@ -35,6 +37,7 @@ __all__ = [
     "MeetingParticipant",
     "Message",
     "N8nRequest",
+    "PasskeyChallenge",
     "Person",
     "PersonGoal",
     "Project",
@@ -43,5 +46,6 @@ __all__ = [
     "SchedulerJob",
     "Task",
     "User",
+    "UserPasskey",
     "UserSession",
 ]

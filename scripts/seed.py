@@ -85,16 +85,16 @@ def _add_demo_data() -> None:
     now = datetime.now(UTC)
     with SessionLocal() as db:
         people = {
-            "ali": Person(full_name="Ali Awdeh", company="Meet Tina", job_title="Operations Lead", email="ali.demo@meettina.net", active=True),
-            "naji": Person(full_name="Naji Haddad", company="Meet Tina", job_title="Automation Owner", email="naji.demo@meettina.net", active=True),
+            "ali": Person(full_name="Ali Awdeh", company="Meet Tina", job_title="Operations Lead", email="ali.awdeh+aliawdeh@maids.cc", active=True),
+            "naji": Person(full_name="Naji Haddad", company="Meet Tina", job_title="Automation Owner", email="ali.awdeh+najihaddad@maids.cc", active=True),
             "youssef": Person(
                 full_name="Youssef Darwish",
                 company="Meet Tina",
                 job_title="Growth Manager",
-                email="youssef.demo@meettina.net",
+                email="ali.awdeh+youssefdarwish@maids.cc",
                 active=True,
             ),
-            "lina": Person(full_name="Lina Karam", company="Meet Tina", job_title="Client Success", email="lina.demo@meettina.net", active=True),
+            "lina": Person(full_name="Lina Karam", company="Meet Tina", job_title="Client Success", email="ali.awdeh+linakaram@maids.cc", active=True),
         }
         db.add_all(people.values())
         db.flush()

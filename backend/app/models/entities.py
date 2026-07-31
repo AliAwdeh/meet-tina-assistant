@@ -43,6 +43,31 @@ class UserSession(Base):
     user: Mapped[User] = relationship()
 
 
+class UserPasskey(Base, TimestampMixin):
+    __tablename__ = "user_passkeys"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    credential_id: Mapped[str] = mapped_column(String(1024), unique=True, index=True, nullable=False)
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    sign_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    device_name: Mapped[str] = mapped_column(String(255), default="Passkey", nullable=False)
+    transports: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    user: Mapped[User] = relationship()
+
+
+class PasskeyChallenge(Base):
+    __tablename__ = "passkey_challenges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    challenge: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class Person(Base, TimestampMixin):
     __tablename__ = "people"
 

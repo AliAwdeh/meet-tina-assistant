@@ -1,7 +1,8 @@
 import { useMutation } from "@tanstack/react-query";
-import { LockKeyhole } from "lucide-react";
+import { Fingerprint, LockKeyhole } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { apiPost, errorMessage } from "../api/client";
+import { passkeysSupported, signInWithPasskey } from "../auth/passkeys";
 import { Button, Notice } from "../components/ui";
 import type { User } from "../types/domain";
 
@@ -16,6 +17,10 @@ export function Login({ onAuthenticated }: { onAuthenticated: (user: User) => vo
   const [password, setPassword] = useState("");
   const login = useMutation({
     mutationFn: () => apiPost<LoginResponse>("/api/auth/login", { email, password }),
+    onSuccess: (data) => onAuthenticated(data.user)
+  });
+  const passkeyLogin = useMutation({
+    mutationFn: () => signInWithPasskey(email),
     onSuccess: (data) => onAuthenticated(data.user)
   });
 
@@ -36,9 +41,9 @@ export function Login({ onAuthenticated }: { onAuthenticated: (user: User) => vo
             <p className="text-sm text-stone-500">Dashboard sign in</p>
           </div>
         </div>
-        {login.isError && (
+        {(login.isError || passkeyLogin.isError) && (
           <div className="mb-4">
-            <Notice title="Sign in failed">{errorMessage(login.error)}</Notice>
+            <Notice title="Sign in failed">{login.isError ? errorMessage(login.error) : errorMessage(passkeyLogin.error)}</Notice>
           </div>
         )}
         <form className="space-y-4" onSubmit={submit}>
@@ -66,6 +71,18 @@ export function Login({ onAuthenticated }: { onAuthenticated: (user: User) => vo
             {login.isPending ? "Signing in" : "Sign in"}
           </Button>
         </form>
+        <div className="mt-4 border-t border-stone-100 pt-4">
+          <Button
+            className="w-full"
+            disabled={!passkeysSupported() || passkeyLogin.isPending || !email}
+            onClick={() => passkeyLogin.mutate()}
+            type="button"
+          >
+            <Fingerprint size={16} />
+            {passkeyLogin.isPending ? "Opening Face ID" : "Sign in with Face ID / Passkey"}
+          </Button>
+          {!passkeysSupported() && <p className="mt-2 text-xs text-stone-500">Passkeys are not available in this browser.</p>}
+        </div>
       </main>
     </div>
   );

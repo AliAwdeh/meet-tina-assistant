@@ -20,6 +20,7 @@ dependencies = [
   "apscheduler>=3.10",
   "pyjwt>=2.8",
   "email-validator>=2.2",
+  "webauthn>=3.0",
 ]
 
 [build-system]

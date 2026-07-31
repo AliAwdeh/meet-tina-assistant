@@ -25,6 +25,26 @@ npm run dev -- --host 0.0.0.0
 
 The dashboard dev server runs on port `5174` to avoid the CRM frontend on `5173`.
 
+## Face ID / Passkey Setup
+
+Passkeys use WebAuthn. The browser asks iOS to verify Face ID; Meet Tina only stores the public credential and sign counter.
+
+Production defaults should include:
+
+```bash
+DASHBOARD_BASE_URL=https://sami.meettina.net
+PASSKEY_RP_ID=sami.meettina.net
+PASSKEY_ALLOWED_ORIGINS=https://sami.meettina.net
+```
+
+To set it up on iPhone:
+
+1. Open `https://sami.meettina.net` in Safari.
+2. Sign in once with the password.
+3. Go to Settings.
+4. Tap `Set up Face ID` and approve the iOS passkey prompt.
+5. On future visits, enter the same email and tap `Sign in with Face ID / Passkey`.
+
 ## Docker Compose
 
 ```bash

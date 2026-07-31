@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,6 +32,10 @@ class Settings(BaseSettings):
     access_token_minutes: int = 30
     refresh_token_days: int = 14
     cookie_secure: bool = True
+
+    passkey_rp_id: str = ""
+    passkey_rp_name: str = "Meet Tina"
+    passkey_allowed_origins: list[str] = Field(default_factory=list)
 
     ai_base_url: str = "https://langcc.maidstech.ai/v1"
     ai_api_key: str = ""
@@ -68,7 +73,7 @@ class Settings(BaseSettings):
     def coerce_data_dir(cls, value: str | Path) -> Path:
         return Path(value)
 
-    @field_validator("allowed_outbound_hosts", "n8n_allowed_source_ips", mode="before")
+    @field_validator("allowed_outbound_hosts", "n8n_allowed_source_ips", "passkey_allowed_origins", mode="before")
     @classmethod
     def split_csv(cls, value: str | list[str] | None) -> list[str]:
         if value is None or value == "":
@@ -76,6 +81,21 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @property
+    def effective_passkey_rp_id(self) -> str:
+        if self.passkey_rp_id:
+            return self.passkey_rp_id
+        return urlparse(self.dashboard_base_url).hostname or "localhost"
+
+    @property
+    def effective_passkey_origins(self) -> list[str]:
+        if self.passkey_allowed_origins:
+            return self.passkey_allowed_origins
+        origins = [self.dashboard_base_url]
+        if self.public_base_url not in origins:
+            origins.append(self.public_base_url)
+        return origins
 
     @property
     def is_production(self) -> bool:
