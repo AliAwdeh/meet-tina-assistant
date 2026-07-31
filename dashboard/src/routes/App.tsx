@@ -11,7 +11,7 @@ import {
   Users,
   X
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, shouldRetry } from "../api/client";
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -56,6 +56,12 @@ export function App() {
     }
   });
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    document.body.classList.add("app-locked");
+    return () => document.body.classList.remove("app-locked");
+  }, [menuOpen]);
+
   if (me.isLoading) {
     return (
       <div className="grid min-h-screen place-items-center bg-[#f7f4ee] px-5">
@@ -77,15 +83,18 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-[#f7f4ee] text-ink">
-      <header className="sticky top-0 z-30 border-b border-stone-200/70 bg-[#f7f4ee]/85 backdrop-blur">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-5 py-3.5">
+      <header
+        className="sticky top-0 z-30 border-b border-stone-200/70 bg-[#f7f4ee]/85 backdrop-blur"
+        style={{ paddingTop: "var(--safe-top)" }}
+      >
+        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-5 sm:py-3.5">
           <button className="flex items-center gap-2.5 text-left" onClick={() => goTo(HOME)} type="button">
-            <span className="grid h-9 w-9 place-items-center rounded-lg bg-ink text-sm font-bold text-mint">MT</span>
-            <span className="text-lg font-semibold tracking-tight">Meet Tina</span>
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-ink text-sm font-bold text-mint">MT</span>
+            <span className="text-base font-semibold tracking-tight sm:text-lg">Meet Tina</span>
           </button>
           <button
             aria-label="Open menu"
-            className="inline-flex h-10 items-center gap-2 rounded-lg border border-stone-300/80 bg-white px-3.5 text-sm font-medium text-stone-700 shadow-sm transition hover:border-ink hover:text-ink"
+            className="inline-flex h-11 items-center gap-2 rounded-lg border border-stone-300/80 bg-white px-3.5 text-sm font-medium text-stone-700 shadow-sm transition hover:border-ink hover:text-ink sm:h-10"
             onClick={() => setMenuOpen(true)}
             type="button"
           >
@@ -95,7 +104,7 @@ export function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-5 py-6">
+      <main className="mx-auto max-w-5xl px-4 py-5 sm:px-5 sm:py-6">
         <ErrorBoundary key={page}>{renderPage(page, me.data)}</ErrorBoundary>
       </main>
 
@@ -107,7 +116,10 @@ export function App() {
             onClick={() => setMenuOpen(false)}
             type="button"
           />
-          <aside className="absolute right-0 top-0 flex h-full w-80 max-w-[85vw] flex-col border-l border-stone-200 bg-[#f7f4ee] shadow-xl">
+          <aside
+            className="absolute right-0 top-0 flex h-full w-80 max-w-[85vw] flex-col border-l border-stone-200 bg-[#f7f4ee] shadow-xl"
+            style={{ paddingTop: "var(--safe-top)", paddingBottom: "var(--safe-bottom)" }}
+          >
             <div className="flex items-center justify-between px-5 py-4">
               <div>
                 <p className="text-sm text-stone-500">Signed in as</p>
@@ -122,13 +134,13 @@ export function App() {
                 <X size={18} />
               </button>
             </div>
-            <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
+            <nav className="app-scroll flex-1 space-y-1 overflow-y-auto px-3 py-2">
               {menu.map((item) => {
                 const Icon = item.icon;
                 const active = page === item.id || (page === HOME && item.id === "Tasks");
                 return (
                   <button
-                    className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition ${
+                    className={`flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition ${
                       active ? "bg-ink text-white" : "text-stone-700 hover:bg-white"
                     }`}
                     key={item.id}

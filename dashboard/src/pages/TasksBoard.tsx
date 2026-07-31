@@ -16,7 +16,9 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, apiPut, errorMessage, shouldRetry } from "../api/client";
-import { Button, LoadingPanel, Notice, secondaryButtonClass } from "../components/ui";
+import { Button, LoadingPanel, Notice, Sheet, secondaryButtonClass } from "../components/ui";
+import { useDragSort } from "../components/useDragSort";
+import type { DragHandleProps } from "../components/useDragSort";
 import type { Person, Project, Task } from "../types/domain";
 
 const priorities = [
@@ -218,14 +220,14 @@ export function TasksBoard({ userName }: { userName: string }) {
   if (tasks.isLoading || projects.isLoading || people.isLoading) return <LoadingPanel label="Loading your board" />;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <div className="overflow-hidden rounded-lg border border-stone-200/70 bg-white shadow-sm">
-        <div className="border-l-4 border-mint p-6 sm:p-8">
-          <p className="text-sm font-medium text-mint">Meet Tina</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">
+        <div className="border-l-4 border-mint p-5 sm:p-8">
+          <p className="text-xs font-medium text-mint sm:text-sm">Meet Tina</p>
+          <h1 className="mt-1.5 text-[26px] font-semibold leading-tight tracking-tight sm:mt-2 sm:text-3xl md:text-4xl">
             Hello {firstName(userName)}, what are we doing today?
           </h1>
-          <p className="mt-3 max-w-xl text-sm text-stone-500">
+          <p className="mt-2.5 max-w-xl text-sm text-stone-500 sm:mt-3">
             {groups.length} {groups.length === 1 ? "person" : "people"} · {totalTasks} {totalTasks === 1 ? "task" : "tasks"} in play. Project
             priority lists are lined up for Sami.
           </p>
@@ -233,21 +235,28 @@ export function TasksBoard({ userName }: { userName: string }) {
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <label className="flex h-12 min-w-0 flex-1 items-center gap-2.5 rounded-lg border border-stone-200/80 bg-white px-4 text-sm shadow-sm transition focus-within:border-ink">
+        <label className="flex h-12 min-w-0 flex-1 items-center gap-2.5 rounded-lg border border-stone-200/80 bg-white px-4 shadow-sm transition focus-within:border-ink">
           <Search className="shrink-0 text-stone-400" size={18} />
+          {/* 16px on phones: anything smaller makes iOS zoom the page on focus. */}
           <input
-            className="h-10 w-full bg-transparent outline-none placeholder:text-stone-400"
-            placeholder="Search people, projects, or tasks"
+            className="h-10 w-full bg-transparent text-base outline-none placeholder:text-stone-400 sm:text-sm"
+            placeholder="Search people, projects, tasks"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
           {search && (
-            <button className="text-stone-400 transition hover:text-ink" onClick={() => setSearch("")} type="button">
+            <button
+              aria-label="Clear search"
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-400 transition hover:bg-stone-100 hover:text-ink"
+              onClick={() => setSearch("")}
+              type="button"
+            >
               <X size={16} />
             </button>
           )}
         </label>
-        <div className="flex gap-2">
+        {/* Phones get these as a fixed bottom bar instead. */}
+        <div className="hidden gap-2 sm:flex">
           <Button className="h-12 rounded-lg" onClick={() => openCreateForm({ personId: formPeople[0]?.id ?? "", projectId: "" })}>
             <Plus size={17} />
             New task
@@ -276,7 +285,14 @@ export function TasksBoard({ userName }: { userName: string }) {
       )}
 
       {(creating || editing) && (
-        <div className="rounded-lg border border-stone-200/80 bg-white p-5 shadow-sm">
+        <Sheet
+          description="Assign it to a person, optionally place it inside a project, and set its priority position."
+          onClose={() => {
+            setCreating(false);
+            setEditing(null);
+          }}
+          title={editing ? "Edit task" : "New task"}
+        >
           <TaskForm
             key={`${editing?.id ?? "new"}:${formDefaults.personId}:${formDefaults.projectId}`}
             initial={editing}
@@ -291,11 +307,15 @@ export function TasksBoard({ userName }: { userName: string }) {
             }}
             onSave={(payload) => saveTask.mutate(payload)}
           />
-        </div>
+        </Sheet>
       )}
 
       {creatingProject && (
-        <div className="rounded-lg border border-stone-200/80 bg-white p-5 shadow-sm">
+        <Sheet
+          description="Create it under a person, then add tasks inside it."
+          onClose={() => setCreatingProject(false)}
+          title="New project"
+        >
           <ProjectForm
             key={projectDefaults.personId}
             defaultPersonId={projectDefaults.personId}
@@ -304,7 +324,7 @@ export function TasksBoard({ userName }: { userName: string }) {
             onCancel={() => setCreatingProject(false)}
             onSave={(payload) => saveProject.mutate(payload)}
           />
-        </div>
+        </Sheet>
       )}
 
       {groups.length === 0 ? (
@@ -320,38 +340,44 @@ export function TasksBoard({ userName }: { userName: string }) {
             const projectCount = group.projects.filter((project) => project.id !== "none").length;
             return (
               <section className="overflow-hidden rounded-lg border border-stone-200/80 bg-white shadow-sm" key={group.person.id}>
-                <div className="flex items-center gap-2 px-4 py-4 transition hover:bg-stone-50/70">
+                <div className="flex items-center gap-1.5 px-2.5 py-2.5 transition hover:bg-stone-50/70 sm:gap-2 sm:px-4 sm:py-4">
                   <button
-                    className="flex min-w-0 flex-1 items-center gap-4 text-left"
+                    className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 text-left sm:gap-4"
                     onClick={() => setOpenPeople((current) => ({ ...current, [group.person.id]: !personOpen }))}
                     type="button"
                   >
-                    <ChevronRight className={`shrink-0 text-stone-400 transition-transform ${personOpen ? "rotate-90" : ""}`} size={20} />
-                    <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-mint/15 text-sm font-bold text-ink">
+                    <ChevronRight className={`shrink-0 text-stone-400 transition-transform ${personOpen ? "rotate-90" : ""}`} size={18} />
+                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-mint/15 text-xs font-bold text-ink sm:h-11 sm:w-11 sm:text-sm">
                       {initials(group.person.full_name)}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-base font-semibold">{group.person.full_name}</span>
-                      <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-sm text-stone-500">
-                        <DetailIcon className="shrink-0" size={14} />
+                      <span className="block truncate text-[15px] font-semibold sm:text-base">{group.person.full_name}</span>
+                      <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-stone-500 sm:text-sm">
+                        <DetailIcon className="shrink-0" size={13} />
                         <span className="truncate">{detail.value}</span>
                       </span>
                     </span>
                   </button>
-                  <span className="hidden shrink-0 rounded-md bg-stone-100 px-3 py-1 text-xs font-medium text-stone-600 sm:inline-flex">
-                    {projectCount} {projectCount === 1 ? "project" : "projects"} · {group.taskCount} {group.taskCount === 1 ? "task" : "tasks"}
+                  <span className="shrink-0 rounded-md bg-stone-100 px-2 py-1 text-[11px] font-medium text-stone-600 sm:px-3 sm:text-xs">
+                    <span className="sm:hidden">
+                      {projectCount}p · {group.taskCount}t
+                    </span>
+                    <span className="hidden sm:inline">
+                      {projectCount} {projectCount === 1 ? "project" : "projects"} · {group.taskCount} {group.taskCount === 1 ? "task" : "tasks"}
+                    </span>
                   </span>
                   <button
-                    className="inline-flex h-9 shrink-0 items-center gap-1 rounded-md border border-stone-200 px-2.5 text-xs font-medium text-stone-600 transition hover:border-ink hover:text-ink"
+                    aria-label={`New project for ${group.person.full_name}`}
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center gap-1 rounded-md border border-stone-200 text-xs font-medium text-stone-600 transition hover:border-ink hover:text-ink sm:h-9 sm:w-auto sm:px-2.5"
                     onClick={() => openCreateProject({ personId: group.person.id })}
                     type="button"
                   >
-                    <Plus size={14} />
-                    Project
+                    <Plus size={15} />
+                    <span className="hidden sm:inline">Project</span>
                   </button>
                 </div>
                 {personOpen && (
-                  <div className="space-y-1.5 border-t border-stone-100 bg-stone-50/40 px-3 py-3">
+                  <div className="space-y-1.5 border-t border-stone-100 bg-stone-50/40 px-2 py-2 sm:px-3 sm:py-3">
                     {group.projects.map((project) => {
                       const key = groupKey(group.person.id, project.id);
                       const projectOpen = openProjects[key] ?? (search.trim().length > 0 || project.tasks.length > 0);
@@ -379,6 +405,26 @@ export function TasksBoard({ userName }: { userName: string }) {
           })}
         </div>
       )}
+
+      {/* Clears the fixed mobile action bar. */}
+      <div aria-hidden className="h-20 sm:hidden" />
+
+      <div
+        className="fixed inset-x-0 bottom-0 z-30 flex gap-2 border-t border-stone-200/70 bg-[#f7f4ee]/92 px-4 pt-3 backdrop-blur sm:hidden"
+        style={{ paddingBottom: "calc(0.75rem + var(--safe-bottom))" }}
+      >
+        <Button className="h-12 flex-1 rounded-lg" onClick={() => openCreateForm({ personId: formPeople[0]?.id ?? "", projectId: "" })}>
+          <Plus size={17} />
+          New task
+        </Button>
+        <Button
+          className={`${secondaryButtonClass} h-12 flex-1 rounded-lg`}
+          onClick={() => openCreateProject({ personId: formPeople[0]?.id ?? "" })}
+        >
+          <FolderKanban size={17} />
+          New project
+        </Button>
+      </div>
     </div>
   );
 }
@@ -400,97 +446,93 @@ function ProjectSection({
   onReorder: (taskId: string, priorityOrder: number) => void;
   onEditTask: (task: Task) => void;
 }) {
-  const draggable = project.id !== "none";
+  const isRealProject = project.id !== "none";
   // Local optimistic order so drag feels instant; resync when server data changes.
   const [order, setOrder] = useState<Task[]>(project.tasks);
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [overId, setOverId] = useState<string | null>(null);
   useEffect(() => {
     setOrder(project.tasks);
   }, [project.tasks]);
 
-  const topPriority = order.length > 0 && project.id !== "none" ? projectPriority(1) : null;
-
-  const handleDrop = (targetId: string) => {
-    if (!dragId || dragId === targetId) {
-      setDragId(null);
-      setOverId(null);
-      return;
+  const canReorder = isRealProject && order.length > 1;
+  const sort = useDragSort({
+    itemCount: order.length,
+    enabled: canReorder && !isMoving,
+    onCommit: (from, to) => {
+      const next = [...order];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      setOrder(next);
+      onReorder(moved.id, to + 1);
     }
-    const current = [...order];
-    const from = current.findIndex((task) => task.id === dragId);
-    const to = current.findIndex((task) => task.id === targetId);
-    setDragId(null);
-    setOverId(null);
-    if (from === -1 || to === -1) return;
-    const [moved] = current.splice(from, 1);
-    current.splice(to, 0, moved);
-    setOrder(current);
-    const newIndex = current.findIndex((task) => task.id === moved.id);
-    onReorder(moved.id, newIndex + 1);
-  };
+  });
+
+  const topPriority = order.length > 0 && isRealProject ? projectPriority(1) : null;
 
   return (
     <div className="overflow-hidden rounded-lg border border-stone-200/70 bg-white">
-      <div className="flex items-center gap-2 px-3 py-2.5">
-        <button className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={onToggle} type="button">
-          <ChevronRight className={`shrink-0 text-stone-400 transition-transform ${isOpen ? "rotate-90" : ""}`} size={17} />
+      <div className="flex items-center gap-1.5 px-2 py-2 sm:gap-2 sm:px-3 sm:py-2.5">
+        <button className="flex min-h-11 min-w-0 flex-1 items-center gap-2 text-left sm:gap-3" onClick={onToggle} type="button">
+          <ChevronRight className={`shrink-0 text-stone-400 transition-transform ${isOpen ? "rotate-90" : ""}`} size={16} />
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-mint/10 text-mint">
             <FolderKanban size={16} />
           </span>
           <span className="min-w-0">
-            <span className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="flex min-w-0 items-center gap-2">
               <span className="truncate text-sm font-semibold">{project.name}</span>
               {topPriority && (
-                <span className="rounded-md border border-amber/50 bg-amber/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber">
+                <span className="hidden shrink-0 rounded-md border border-amber/50 bg-amber/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber sm:inline-block">
                   {topPriority.label}
                 </span>
               )}
             </span>
-            <span className="mt-0.5 block text-xs text-stone-400">
+            <span className="mt-0.5 block truncate text-xs text-stone-400">
               {order.length} {order.length === 1 ? "task" : "tasks"}
-              {project.id === "none" ? "" : ` · ${project.status}`}
+              {isRealProject ? ` · ${project.status}` : ""}
             </span>
           </span>
         </button>
         <button
-          className="inline-flex h-8 items-center gap-1 rounded-md border border-stone-200 px-2.5 text-xs font-medium text-stone-600 transition hover:border-ink hover:text-ink"
+          aria-label={`New task in ${project.name}`}
+          className="inline-flex h-10 w-10 shrink-0 items-center justify-center gap-1 rounded-md border border-stone-200 text-xs font-medium text-stone-600 transition hover:border-ink hover:text-ink sm:h-8 sm:w-auto sm:px-2.5"
           onClick={onAddTask}
           type="button"
         >
-          <Plus size={14} />
-          Task
+          <Plus size={15} />
+          <span className="hidden sm:inline">Task</span>
         </button>
       </div>
       {isOpen && (
-        <div className="border-t border-stone-100 bg-stone-50/50 p-2.5">
+        <div className="border-t border-stone-100 bg-stone-50/50 p-2 sm:p-2.5">
           {order.length === 0 ? (
             <div className="rounded-md border border-dashed border-stone-300 bg-white px-4 py-6 text-center text-sm text-stone-400">
               No tasks here yet.
             </div>
           ) : (
-            <div className="space-y-2">
-              {order.map((task, index) => (
-                <TaskRow
-                  draggable={draggable}
-                  index={index}
-                  isDragging={dragId === task.id}
-                  isMoving={isMoving}
-                  isOver={overId === task.id && dragId !== null && dragId !== task.id}
-                  key={task.id}
-                  onDragEnd={() => {
-                    setDragId(null);
-                    setOverId(null);
-                  }}
-                  onDragOver={() => setOverId(task.id)}
-                  onDragStart={() => setDragId(task.id)}
-                  onDrop={() => handleDrop(task.id)}
-                  onEdit={() => onEditTask(task)}
-                  task={task}
-                  useProjectPriority={draggable}
-                />
-              ))}
-            </div>
+            <>
+              {canReorder && (
+                <p className="px-1 pb-2 text-[11px] text-stone-400">
+                  Drag <GripVertical className="inline align-text-bottom" size={12} /> to change priority.
+                </p>
+              )}
+              {/* `relative` makes this the offsetParent the drag hook measures against. */}
+              <div className="relative space-y-2" ref={sort.containerRef}>
+                {order.map((task, index) => (
+                  <TaskRow
+                    canReorder={canReorder}
+                    handleProps={sort.handleProps(index)}
+                    innerRef={sort.registerRow(index)}
+                    isDragging={sort.draggingIndex === index}
+                    isSorting={sort.isDragging}
+                    key={task.id}
+                    onEdit={() => onEditTask(task)}
+                    position={sort.positionOf(index)}
+                    task={task}
+                    transform={sort.transformFor(index)}
+                    useProjectPriority={isRealProject}
+                  />
+                ))}
+              </div>
+            </>
           )}
         </div>
       )}
@@ -500,71 +542,61 @@ function ProjectSection({
 
 function TaskRow({
   task,
-  index,
-  draggable,
+  position,
+  canReorder,
   isDragging,
-  isOver,
-  isMoving,
-  onDragStart,
-  onDragOver,
-  onDrop,
-  onDragEnd,
+  isSorting,
+  transform,
+  innerRef,
+  handleProps,
   onEdit,
   useProjectPriority
 }: {
   task: Task;
-  index: number;
-  draggable: boolean;
+  position: number;
+  canReorder: boolean;
   isDragging: boolean;
-  isOver: boolean;
-  isMoving: boolean;
-  onDragStart: () => void;
-  onDragOver: () => void;
-  onDrop: () => void;
-  onDragEnd: () => void;
+  isSorting: boolean;
+  transform: string | undefined;
+  innerRef: (el: HTMLElement | null) => void;
+  handleProps: DragHandleProps;
   onEdit: () => void;
   useProjectPriority: boolean;
 }) {
-  const priority = taskPriority(task, index + 1, useProjectPriority);
+  const priority = taskPriority(task, position + 1, useProjectPriority);
   return (
     <article
-      className={`group flex items-center gap-3 rounded-lg border bg-white px-3 py-2.5 shadow-sm transition ${
-        isDragging ? "border-mint opacity-50" : isOver ? "border-mint ring-2 ring-mint/40" : "border-stone-200/80 hover:border-stone-300"
+      className={`group relative flex items-start gap-2 rounded-lg border bg-white px-2 py-2.5 shadow-sm sm:gap-3 sm:px-3 ${
+        isDragging ? "border-mint shadow-lg ring-2 ring-mint/40" : "border-stone-200/80 hover:border-stone-300"
       }`}
-      onDragEnd={onDragEnd}
-      onDragOver={(event) => {
-        if (!draggable) return;
-        event.preventDefault();
-        onDragOver();
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        onDrop();
+      ref={innerRef}
+      style={{
+        transform,
+        // The dragged row tracks the finger exactly; the others glide into their new slot.
+        transition: isDragging ? "none" : "transform 180ms cubic-bezier(0.2, 0, 0, 1)",
+        zIndex: isDragging ? 20 : undefined,
+        touchAction: isSorting ? "none" : undefined
       }}
     >
-      {draggable ? (
+      {canReorder ? (
         <span
-          aria-label="Move task"
-          className="grid h-8 w-8 shrink-0 cursor-grab place-items-center rounded-md text-stone-300 transition group-hover:text-stone-500 active:cursor-grabbing"
-          draggable={!isMoving}
-          onDragStart={(event) => {
-            event.dataTransfer.effectAllowed = "move";
-            onDragStart();
-          }}
+          aria-label="Drag to change priority"
+          className="drag-handle -ml-1 grid h-11 w-8 shrink-0 cursor-grab place-items-center rounded-md text-stone-300 transition hover:text-stone-500 active:cursor-grabbing sm:h-9 sm:w-7"
           role="button"
-          tabIndex={0}
+          tabIndex={-1}
+          {...handleProps}
         >
-          <GripVertical size={17} />
+          <GripVertical size={18} />
         </span>
       ) : (
-        <span className="h-8 w-8 shrink-0" />
+        <span aria-hidden className="w-1 shrink-0 sm:w-2" />
       )}
-      <span className="grid h-8 min-w-8 shrink-0 place-items-center rounded-md bg-ink px-2 text-xs font-bold text-white">
-        {useProjectPriority ? priority.label : index + 1}
+      <span className="mt-0.5 grid h-7 min-w-7 shrink-0 place-items-center rounded-md bg-ink px-1.5 text-[11px] font-bold text-white sm:h-8 sm:min-w-8 sm:px-2 sm:text-xs">
+        {useProjectPriority ? priority.label : position + 1}
       </span>
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <h4 className="text-sm font-semibold leading-5 text-ink">{task.title}</h4>
+        <h4 className="break-words text-sm font-semibold leading-5 text-ink">{task.title}</h4>
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold ${priority.tone}`}>
             <span className={`h-1.5 w-1.5 rounded-full ${priority.dot}`} />
             {useProjectPriority ? `Priority ${priority.label}` : priority.label}
@@ -575,23 +607,19 @@ function TaskRow({
               {task.status}
             </span>
           )}
+          {task.due_date && (
+            <span className="inline-flex items-center gap-1 text-[11px] text-stone-400">
+              <CalendarDays size={12} />
+              {new Date(task.due_date).toLocaleDateString()}
+            </span>
+          )}
         </div>
-        {(task.due_date || task.description) && (
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-400">
-            {task.due_date && (
-              <span className="inline-flex items-center gap-1">
-                <CalendarDays size={13} />
-                {new Date(task.due_date).toLocaleDateString()}
-              </span>
-            )}
-            {task.description && <span className="truncate">{task.description}</span>}
-          </div>
-        )}
+        {task.description && <p className="mt-1 line-clamp-2 text-xs text-stone-400">{task.description}</p>}
       </div>
       <button
-        className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-stone-400 transition hover:bg-stone-100 hover:text-ink sm:opacity-0 sm:group-hover:opacity-100"
+        aria-label="Edit task"
+        className="grid h-10 w-10 shrink-0 place-items-center rounded-md text-stone-400 transition hover:bg-stone-100 hover:text-ink sm:h-9 sm:w-9 sm:opacity-0 sm:group-hover:opacity-100"
         onClick={onEdit}
-        title="Edit task"
         type="button"
       >
         <Pencil size={15} />
@@ -600,8 +628,11 @@ function TaskRow({
   );
 }
 
-const inputClass = "mt-1 h-10 w-full rounded-lg border border-stone-300 bg-white px-3 text-sm outline-none transition focus:border-ink";
-const textareaClass = "mt-1 min-h-20 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-ink";
+// text-base on phones (16px) keeps iOS from zooming the viewport when a field is focused.
+const inputClass =
+  "mt-1 h-11 w-full rounded-lg border border-stone-300 bg-white px-3 text-base outline-none transition focus:border-ink sm:h-10 sm:text-sm";
+const textareaClass =
+  "mt-1 min-h-20 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-base outline-none transition focus:border-ink sm:text-sm";
 
 function ProjectForm({
   isSaving,
@@ -635,10 +666,6 @@ function ProjectForm({
         });
       }}
     >
-      <div className="border-b border-stone-200 pb-2 md:col-span-3">
-        <h3 className="text-base font-semibold">New project</h3>
-        <p className="mt-1 text-sm text-stone-500">Create it under a person, then add tasks inside it.</p>
-      </div>
       <label className="block text-sm font-medium">
         Person
         <select className={inputClass} required value={form.person_id} onChange={(event) => setForm({ ...form, person_id: event.target.value })}>
@@ -667,12 +694,17 @@ function ProjectForm({
         Description
         <textarea className={textareaClass} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
       </label>
-      <div className="flex items-end gap-2 md:col-span-3">
-        <Button disabled={isSaving || !people.length} type="submit">
+      <div className="flex items-end gap-2 pt-1 md:col-span-3">
+        <Button className="h-12 flex-1 sm:h-10 sm:flex-none" disabled={isSaving || !people.length} type="submit">
           <Save size={16} />
           {isSaving ? "Saving" : "Save"}
         </Button>
-        <Button className={secondaryButtonClass} disabled={isSaving} onClick={onCancel} type="button">
+        <Button
+          className={`${secondaryButtonClass} h-12 flex-1 sm:h-10 sm:flex-none`}
+          disabled={isSaving}
+          onClick={onCancel}
+          type="button"
+        >
           <X size={16} />
           Cancel
         </Button>
@@ -728,10 +760,6 @@ function TaskForm({
         });
       }}
     >
-      <div className="border-b border-stone-200 pb-2 md:col-span-3">
-        <h3 className="text-base font-semibold">{initial ? "Edit task" : "New task"}</h3>
-        <p className="mt-1 text-sm text-stone-500">Assign it to a person, optionally place it inside a project, and set its priority position.</p>
-      </div>
       <label className="block text-sm font-medium md:col-span-2">
         Title
         <input className={inputClass} required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
@@ -801,12 +829,17 @@ function TaskForm({
         Description
         <textarea className={textareaClass} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
       </label>
-      <div className="flex items-end gap-2 md:col-span-3">
-        <Button disabled={isSaving} type="submit">
+      <div className="flex items-end gap-2 pt-1 md:col-span-3">
+        <Button className="h-12 flex-1 sm:h-10 sm:flex-none" disabled={isSaving} type="submit">
           <Save size={16} />
           {isSaving ? "Saving" : "Save"}
         </Button>
-        <Button className={secondaryButtonClass} disabled={isSaving} onClick={onCancel} type="button">
+        <Button
+          className={`${secondaryButtonClass} h-12 flex-1 sm:h-10 sm:flex-none`}
+          disabled={isSaving}
+          onClick={onCancel}
+          type="button"
+        >
           <X size={16} />
           Cancel
         </Button>
