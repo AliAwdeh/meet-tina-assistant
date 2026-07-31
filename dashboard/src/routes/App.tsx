@@ -105,7 +105,7 @@ export function App() {
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-5 sm:px-5 sm:py-6">
-        <ErrorBoundary key={page}>{renderPage(page, me.data)}</ErrorBoundary>
+        <ErrorBoundary key={page}>{renderPage(page)}</ErrorBoundary>
       </main>
 
       {menuOpen && (
@@ -170,8 +170,8 @@ export function App() {
   );
 }
 
-function renderPage(page: Page, user: User) {
-  if (page === "Home" || page === "Tasks") return <TasksBoard userName={user.name} />;
+function renderPage(page: Page) {
+  if (page === "Home" || page === "Tasks") return <TasksBoard />;
   if (page === "Overview") return <Overview />;
   if (page === "People" || page === "Projects" || page === "Meetings" || page === "Reminders") return <Records title={page} />;
   if (page === "Emails") return <Emails />;

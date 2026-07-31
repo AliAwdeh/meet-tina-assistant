@@ -52,10 +52,6 @@ type PersonGroup = {
 type FormDefaults = { personId: string; projectId: string };
 type ProjectFormDefaults = { personId: string };
 
-function firstName(name: string) {
-  return name.trim().split(/\s+/)[0] || "there";
-}
-
 function groupKey(personId: string, projectId: string) {
   return `${personId}:${projectId}`;
 }
@@ -82,7 +78,7 @@ function taskPriority(task: Task, order: number, isProjectTask: boolean) {
   return priorities.find((item) => item.id === task.priority) ?? priorities[2];
 }
 
-export function TasksBoard({ userName }: { userName: string }) {
+export function TasksBoard() {
   const queryClient = useQueryClient();
   const [openPeople, setOpenPeople] = useState<Record<string, boolean>>({});
   const [openProjects, setOpenProjects] = useState<Record<string, boolean>>({});
@@ -202,6 +198,12 @@ export function TasksBoard({ userName }: { userName: string }) {
 
   const formPeople = (people.data ?? []).filter((person) => person.active);
   const totalTasks = groups.reduce((count, group) => count + group.taskCount, 0);
+  const totalProjects = groups.reduce((count, group) => count + group.projects.filter((project) => project.id !== "none").length, 0);
+  const defaultOpenPersonId = groups[0]?.person.id;
+  const defaultOpenProjectKey = groups[0]
+    ? groupKey(groups[0].person.id, groups[0].projects.find((project) => project.tasks.length > 0)?.id ?? groups[0].projects[0]?.id ?? "none")
+    : undefined;
+  const searchActive = search.trim().length > 0;
 
   const openCreateForm = (defaults: FormDefaults) => {
     setEditing(null);
@@ -225,11 +227,11 @@ export function TasksBoard({ userName }: { userName: string }) {
         <div className="border-l-4 border-mint p-5 sm:p-8">
           <p className="text-xs font-medium text-mint sm:text-sm">Meet Tina</p>
           <h1 className="mt-1.5 text-[26px] font-semibold leading-tight tracking-tight sm:mt-2 sm:text-3xl md:text-4xl">
-            Hello {firstName(userName)}, what are we doing today?
+            Hello Sami, what are we doing today?
           </h1>
           <p className="mt-2.5 max-w-xl text-sm text-stone-500 sm:mt-3">
-            {groups.length} {groups.length === 1 ? "person" : "people"} · {totalTasks} {totalTasks === 1 ? "task" : "tasks"} in play. Project
-            priority lists are lined up for Sami.
+            {groups.length} {groups.length === 1 ? "person" : "people"} · {totalProjects} {totalProjects === 1 ? "project" : "projects"} ·{" "}
+            {totalTasks} {totalTasks === 1 ? "task" : "tasks"} in play.
           </p>
         </div>
       </div>
@@ -334,7 +336,7 @@ export function TasksBoard({ userName }: { userName: string }) {
       ) : (
         <div className="space-y-3">
           {groups.map((group) => {
-            const personOpen = openPeople[group.person.id] ?? (search.trim().length > 0 || group.taskCount > 0);
+            const personOpen = searchActive || (openPeople[group.person.id] ?? group.person.id === defaultOpenPersonId);
             const detail = personDetail(group.person);
             const DetailIcon = detail.icon;
             const projectCount = group.projects.filter((project) => project.id !== "none").length;
@@ -380,7 +382,7 @@ export function TasksBoard({ userName }: { userName: string }) {
                   <div className="space-y-1.5 border-t border-stone-100 bg-stone-50/40 px-2 py-2 sm:px-3 sm:py-3">
                     {group.projects.map((project) => {
                       const key = groupKey(group.person.id, project.id);
-                      const projectOpen = openProjects[key] ?? (search.trim().length > 0 || project.tasks.length > 0);
+                      const projectOpen = searchActive || (openProjects[key] ?? key === defaultOpenProjectKey);
                       return (
                         <ProjectSection
                           isMoving={reorderTask.isPending}
