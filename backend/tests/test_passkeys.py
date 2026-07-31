@@ -1,7 +1,10 @@
+from datetime import UTC, datetime, timedelta
+
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from webauthn.helpers import bytes_to_base64url
 
+from app.api.routes.auth import _coerce_utc
 from app.auth.passwords import hash_password
 from app.core.database import SessionLocal
 from app.models.entities import PasskeyChallenge, User, UserPasskey
@@ -43,6 +46,12 @@ def test_passkey_registration_options_store_challenge(client: TestClient) -> Non
         challenge = db.scalar(select(PasskeyChallenge).where(PasskeyChallenge.user_id == user.id, PasskeyChallenge.purpose == "registration"))
         assert challenge is not None
         assert challenge.challenge == options["challenge"]
+
+
+def test_passkey_expiry_comparison_accepts_sqlite_naive_datetime() -> None:
+    naive_expiry = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=1)
+
+    assert _coerce_utc(naive_expiry).tzinfo is UTC
 
 
 def test_passkey_login_options_require_registered_passkey(client: TestClient) -> None:

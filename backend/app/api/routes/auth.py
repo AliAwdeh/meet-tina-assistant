@@ -47,6 +47,16 @@ def _user_read(user: User) -> UserRead:
     return UserRead(id=user.id, name=user.name, email=user.email, role=user.role, status=user.status)
 
 
+def _now_utc() -> datetime:
+    return datetime.now(UTC)
+
+
+def _coerce_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
 def _set_auth_cookies(response: Response, settings: Settings, access_token: str, refresh_token: str) -> None:
     response.set_cookie(
         "access_token",
@@ -72,9 +82,9 @@ def _issue_session(db: Session, response: Response, settings: Settings, user: Us
     session = UserSession(
         user_id=user.id,
         refresh_token_hash=hash_token(refresh_token),
-        expires_at=datetime.now(UTC) + timedelta(days=settings.refresh_token_days),
+        expires_at=_now_utc() + timedelta(days=settings.refresh_token_days),
     )
-    user.last_login = datetime.now(UTC)
+    user.last_login = _now_utc()
     db.add(session)
     write_audit(db, actor_type="dashboard_user", actor_id=user.id, action=action, entity_type="user", entity_id=user.id)
     db.commit()
@@ -111,7 +121,7 @@ def _credential_id(credential: dict[str, object]) -> str:
 
 
 def _store_passkey_challenge(db: Session, user_id: str, purpose: str, challenge: bytes) -> None:
-    now = datetime.now(UTC)
+    now = _now_utc()
     db.execute(delete(PasskeyChallenge).where(PasskeyChallenge.expires_at < now))
     db.add(
         PasskeyChallenge(
@@ -133,7 +143,7 @@ def _consume_passkey_challenge(db: Session, user_id: str, purpose: str, credenti
             PasskeyChallenge.challenge == challenge,
         )
     )
-    if record is None or record.expires_at < datetime.now(UTC):
+    if record is None or _coerce_utc(record.expires_at) < _now_utc():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Passkey challenge expired. Try again.")
     db.delete(record)
     db.commit()
@@ -275,7 +285,7 @@ def passkey_login_verify(
     except InvalidAuthenticationResponse as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid passkey login") from exc
     passkey.sign_count = verified.new_sign_count
-    passkey.last_used_at = datetime.now(UTC)
+    passkey.last_used_at = _now_utc()
     write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="passkey_login", entity_type="user_passkey", entity_id=passkey.id)
     return _issue_session(db, response, settings, user, "passkey_session")
 
@@ -290,18 +300,18 @@ def refresh(
     if not refresh_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token")
     session = db.scalar(select(UserSession).where(UserSession.refresh_token_hash == hash_token(refresh_token)))
-    if session is None or session.revoked_at is not None or session.expires_at < datetime.now(UTC):
+    if session is None or session.revoked_at is not None or _coerce_utc(session.expires_at) < _now_utc():
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
     user = db.get(User, session.user_id)
     if user is None or user.status != "active":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive or missing user")
-    session.revoked_at = datetime.now(UTC)
+    session.revoked_at = _now_utc()
     new_refresh = create_refresh_token()
     db.add(
         UserSession(
             user_id=user.id,
             refresh_token_hash=hash_token(new_refresh),
-            expires_at=datetime.now(UTC) + timedelta(days=settings.refresh_token_days),
+            expires_at=_now_utc() + timedelta(days=settings.refresh_token_days),
         )
     )
     access_token = create_access_token(settings, user.id, user.role)
@@ -320,7 +330,7 @@ def logout(
     if refresh_token:
         session = db.scalar(select(UserSession).where(UserSession.refresh_token_hash == hash_token(refresh_token)))
         if session and session.revoked_at is None:
-            session.revoked_at = datetime.now(UTC)
+            session.revoked_at = _now_utc()
             write_audit(
                 db,
                 actor_type="dashboard_user",

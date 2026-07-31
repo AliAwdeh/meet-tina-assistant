@@ -54,7 +54,7 @@ export function Settings() {
         <p className="text-sm text-stone-500">Notification controls for Sami’s workspace</p>
       </div>
       {(settings.isError || save.isError || passkeys.isError || addPasskey.isError) && (
-        <Notice title="Settings could not save">
+        <Notice title={addPasskey.isError || passkeys.isError ? "Face ID setup failed" : "Settings could not save"}>
           {settings.isError
             ? errorMessage(settings.error)
             : save.isError
