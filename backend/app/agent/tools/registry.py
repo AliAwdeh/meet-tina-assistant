@@ -65,6 +65,7 @@ async def send_email_tool(
     to_people: list[Person],
     subject: str,
     text_body: str,
+    html_body: str | None = None,
     related_task: Task | None = None,
 ) -> dict[str, Any]:
     recipients = [person for person in to_people if person.email]
@@ -82,7 +83,7 @@ async def send_email_tool(
         request_id=request_id,
         to=[EmailContact(email=person.email, name=person.full_name) for person in recipients if person.email],
         subject=subject,
-        html_body="<p>" + text_body.replace("\n", "<br>") + "</p>",
+        html_body=html_body or "<p>" + text_body.replace("\n", "<br>") + "</p>",
         text_body=text_body,
         related_person_ids=[person.id for person in recipients],
         related_task_ids=related_task_ids,

@@ -1,8 +1,12 @@
+from copy import deepcopy
 from datetime import UTC, datetime
+from html import escape
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.agent.tools.registry import ToolContext, send_email_tool
 from app.auth.dependencies import get_current_user
@@ -35,6 +39,7 @@ from app.services.audit import write_audit
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 NOTIFICATION_SETTINGS_KEY = "notification_settings"
+TASK_NOTIFICATION_BATCHES_KEY = "task_notification_batches"
 PROJECT_PRIORITY_NAMES = {1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}
 PROJECT_PRIORITY_ORDERS = {"urgent": 1, "high": 2, "medium": 3, "low": 4}
 
@@ -233,6 +238,270 @@ def _task_email_context(db: Session, task: Task) -> str:
     )
 
 
+def _date_value(value: datetime | None) -> str | None:
+    return value.date().isoformat() if value else None
+
+
+def _task_snapshot(db: Session, task: Task) -> dict[str, Any]:
+    person = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
+    project = db.get(Project, task.project_id) if task.project_id else None
+    return {
+        "id": task.id,
+        "title": task.title,
+        "description": task.description,
+        "status": task.status,
+        "priority": task.priority,
+        "priority_order": task.priority_order,
+        "priority_label": _task_priority_name(task),
+        "assigned_person_id": task.assigned_person_id,
+        "assigned_person_name": person.full_name if person else "Unassigned",
+        "project_id": task.project_id,
+        "project_name": project.name if project else "No project",
+        "due_date": _date_value(task.due_date),
+    }
+
+
+def _pending_batches(db: Session) -> tuple[AppSetting, dict[str, Any]]:
+    row = db.get(AppSetting, TASK_NOTIFICATION_BATCHES_KEY)
+    if row is None:
+        row = AppSetting(key=TASK_NOTIFICATION_BATCHES_KEY, value={"users": {}})
+        db.add(row)
+        db.flush()
+    value = deepcopy(row.value or {})
+    value.setdefault("users", {})
+    return row, value
+
+
+def _queue_task_notification(
+    db: Session,
+    user: User,
+    task: Task,
+    *,
+    action: str,
+    before: dict[str, Any] | None = None,
+    old_project_id: str | None = None,
+    old_assigned_person_id: str | None = None,
+) -> None:
+    if not _task_change_emails_enabled(db):
+        return
+    people = _task_notification_people(db, task, old_project_id=old_project_id, old_assigned_person_id=old_assigned_person_id)
+    if not any(person.email for person in people):
+        return
+    after = _task_snapshot(db, task)
+    row, value = _pending_batches(db)
+    users = value.setdefault("users", {})
+    batch = users.setdefault(user.id, {"tasks": {}})
+    tasks = batch.setdefault("tasks", {})
+    entry = tasks.get(task.id)
+    recipient_ids = {person.id for person in people}
+    project_ids = {project_id for project_id in [old_project_id, task.project_id] if project_id}
+    if entry is None:
+        tasks[task.id] = {
+            "action": action,
+            "before": before,
+            "after": after,
+            "recipient_ids": sorted(recipient_ids),
+            "project_ids": sorted(project_ids),
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+    else:
+        entry["after"] = after
+        entry["recipient_ids"] = sorted(set(entry.get("recipient_ids", [])) | recipient_ids)
+        entry["project_ids"] = sorted(set(entry.get("project_ids", [])) | project_ids)
+        if entry.get("action") != "created":
+            entry["action"] = action
+    row.value = value
+    flag_modified(row, "value")
+    db.flush()
+
+
+def _snapshot_priority(snapshot: dict[str, Any]) -> str:
+    project_id = snapshot.get("project_id")
+    if project_id:
+        return _project_priority_name(int(snapshot.get("priority_order") or 0))
+    return str(snapshot.get("priority") or "medium").title()
+
+
+def _change_lines(entry: dict[str, Any]) -> list[str]:
+    action = entry.get("action")
+    before = entry.get("before") or {}
+    after = entry.get("after") or {}
+    if action == "created":
+        return [
+            "Created task.",
+            f"Assigned to {after.get('assigned_person_name', 'Unassigned')}.",
+            f"Project: {after.get('project_name', 'No project')}.",
+            f"Priority: {_snapshot_priority(after)}.",
+        ]
+    lines: list[str] = []
+    if before.get("title") != after.get("title"):
+        lines.append(f"Title changed from {before.get('title')} to {after.get('title')}.")
+    if before.get("description") != after.get("description"):
+        lines.append("Description updated.")
+    if before.get("project_id") != after.get("project_id"):
+        lines.append(f"Project changed from {before.get('project_name', 'No project')} to {after.get('project_name', 'No project')}.")
+    if before.get("assigned_person_id") != after.get("assigned_person_id"):
+        lines.append(
+            f"Assignee changed from {before.get('assigned_person_name', 'Unassigned')} "
+            f"to {after.get('assigned_person_name', 'Unassigned')}."
+        )
+    if before.get("status") != after.get("status"):
+        lines.append(f"Status changed from {before.get('status')} to {after.get('status')}.")
+    if before.get("due_date") != after.get("due_date"):
+        lines.append(f"Due date changed from {before.get('due_date') or 'none'} to {after.get('due_date') or 'none'}.")
+    before_priority = _snapshot_priority(before) if before else ""
+    after_priority = _snapshot_priority(after)
+    if before_priority != after_priority:
+        lines.append(f"Priority changed from {before_priority} to {after_priority}.")
+    return lines
+
+
+def _project_priority_items(db: Session, project_id: str) -> list[dict[str, str]]:
+    project = db.get(Project, project_id)
+    if project is None:
+        return []
+    items: list[dict[str, str]] = []
+    for task in _ordered_project_tasks(db, project_id):
+        assignee = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
+        items.append(
+            {
+                "project": project.name,
+                "priority": _project_priority_name(task.priority_order),
+                "title": task.title,
+                "assignee": assignee.full_name if assignee else "Unassigned",
+            }
+        )
+    return items
+
+
+def _render_task_digest(db: Session, recipient: Person, entries: list[dict[str, Any]]) -> tuple[str, str]:
+    changed_entries = [(entry, _change_lines(entry)) for entry in entries]
+    changed_entries = [(entry, lines) for entry, lines in changed_entries if lines]
+    project_ids = sorted(
+        {
+            project_id
+            for entry, _lines in changed_entries
+            for project_id in entry.get("project_ids", [])
+            if project_id
+        }
+    )
+    text_lines = [f"Hi {recipient.full_name},", "", "Here are the latest task updates:", ""]
+    html_parts = [
+        "<div style=\"font-family:Inter,Arial,sans-serif;background:#f7f4ee;padding:24px;color:#1f2a24;\">",
+        "<div style=\"max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e7e0d7;border-radius:10px;overflow:hidden;\">",
+        "<div style=\"border-left:6px solid #88c7a2;padding:22px 24px;\">",
+        "<p style=\"margin:0 0 6px;color:#4d8f69;font-size:13px;font-weight:700;letter-spacing:.02em;\">Meet Tina</p>",
+        f"<h1 style=\"margin:0;font-size:22px;line-height:1.25;\">Task update digest</h1>",
+        f"<p style=\"margin:8px 0 0;color:#6b6258;font-size:14px;\">Hi {escape(recipient.full_name)}, here are the latest task updates.</p>",
+        "</div>",
+        "<div style=\"padding:0 24px 22px;\">",
+    ]
+    by_project: dict[str, list[tuple[dict[str, Any], list[str]]]] = {}
+    for entry, lines in changed_entries:
+        after = entry.get("after") or {}
+        by_project.setdefault(str(after.get("project_name") or "No project"), []).append((entry, lines))
+    for project_name, project_entries in by_project.items():
+        text_lines.append(f"{project_name}")
+        html_parts.append(
+            f"<section style=\"margin-top:18px;border:1px solid #ebe5dc;border-radius:8px;overflow:hidden;\">"
+            f"<div style=\"background:#f8f6f1;padding:10px 14px;font-weight:700;\">{escape(project_name)}</div>"
+            f"<div style=\"padding:12px 14px;\">"
+        )
+        for entry, lines in project_entries:
+            after = entry.get("after") or {}
+            text_lines.append(f"- {after.get('title')}")
+            html_parts.append(
+                f"<div style=\"border-bottom:1px solid #f0ece6;padding:10px 0;\">"
+                f"<div style=\"font-weight:700;margin-bottom:6px;\">{escape(str(after.get('title') or 'Untitled task'))}</div>"
+                f"<ul style=\"margin:0;padding-left:18px;color:#4b443d;font-size:14px;line-height:1.6;\">"
+            )
+            for line in lines:
+                text_lines.append(f"  - {line}")
+                html_parts.append(f"<li>{escape(line)}</li>")
+            html_parts.append("</ul></div>")
+        html_parts.append("</div></section>")
+        text_lines.append("")
+    if project_ids:
+        text_lines.append("Current project priority lists:")
+        html_parts.append("<h2 style=\"margin:24px 0 10px;font-size:17px;\">Current project priority lists</h2>")
+        for project_id in project_ids:
+            items = _project_priority_items(db, project_id)
+            if not items:
+                continue
+            project_name = items[0]["project"]
+            text_lines.append(project_name)
+            html_parts.append(
+                f"<section style=\"margin-top:12px;border:1px solid #d8e9dd;border-radius:8px;background:#fbfdfb;padding:14px;\">"
+                f"<div style=\"font-weight:700;margin-bottom:10px;color:#2f6b46;\">{escape(project_name)}</div>"
+            )
+            for item in items:
+                text_lines.append(f"- {item['priority']}: {item['title']} ({item['assignee']})")
+                html_parts.append(
+                    f"<div style=\"display:flex;gap:10px;padding:7px 0;border-top:1px solid #edf4ee;\">"
+                    f"<span style=\"min-width:72px;font-weight:700;color:#1f2a24;\">{escape(item['priority'])}</span>"
+                    f"<span>{escape(item['title'])} <span style=\"color:#7a7168;\">({escape(item['assignee'])})</span></span>"
+                    f"</div>"
+                )
+            html_parts.append("</section>")
+            text_lines.append("")
+    html_parts.extend(["</div>", "</div>", "</div>"])
+    return "\n".join(text_lines).strip(), "".join(html_parts)
+
+
+@router.get("/tasks/notifications/pending")
+def pending_task_notifications(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, int]:
+    _row, value = _pending_batches(db)
+    tasks = value.get("users", {}).get(user.id, {}).get("tasks", {})
+    return {"pending": len(tasks)}
+
+
+@router.post("/tasks/notifications/flush")
+async def flush_task_notifications(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict[str, int]:
+    row, value = _pending_batches(db)
+    users = value.setdefault("users", {})
+    batch = users.get(user.id, {"tasks": {}})
+    entries = list((batch.get("tasks") or {}).values())
+    users.pop(user.id, None)
+    row.value = value
+    flag_modified(row, "value")
+    if not entries or not _task_change_emails_enabled(db):
+        db.commit()
+        return {"sent": 0, "pending": 0}
+    people_by_id = {person.id: person for person in db.scalars(select(Person).where(Person.active.is_(True))).all()}
+    entries_by_recipient: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        if not _change_lines(entry):
+            continue
+        for person_id in entry.get("recipient_ids", []):
+            person = people_by_id.get(person_id)
+            if person and person.email:
+                entries_by_recipient.setdefault(person.id, []).append(entry)
+    sent = 0
+    for person_id, person_entries in entries_by_recipient.items():
+        person = people_by_id[person_id]
+        text_body, html_body = _render_task_digest(db, person, person_entries)
+        await send_email_tool(
+            ToolContext(
+                db=db,
+                actor_type="dashboard_user",
+                actor_id=user.id,
+                request_id=f"task-digest:{user.id}:{person.id}:{datetime.now(UTC).isoformat()}",
+            ),
+            settings,
+            to_people=[person],
+            subject="Task updates digest",
+            text_body=text_body,
+            html_body=html_body,
+        )
+        sent += 1
+    db.commit()
+    return {"sent": sent, "pending": 0}
+
+
 @router.get("/projects", response_model=list[ProjectRead])
 def projects(person_id: str | None = None, status: str | None = None, db: Session = Depends(get_db)) -> list[ProjectRead]:
     return [_project_read(db, project) for project in records.list_projects(db, person_id=person_id, status=status)]
@@ -295,10 +564,10 @@ async def create_task(
     if payload.project_id and db.get(Project, payload.project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
     task = records.create_task(db, payload, created_by=user.id)
-    desired_order = payload.priority_order or (_project_priority_order(payload.priority) if payload.project_id else None)
+    desired_order = payload.priority_order or (1 if payload.project_id else None)
     _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=desired_order)
     write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="create_task", entity_type="task", entity_id=task.id)
-    await _send_task_created_email(db, settings, user, task)
+    _queue_task_notification(db, user, task, action="created")
     db.commit()
     db.refresh(task)
     return _task_read(db, task)
@@ -452,6 +721,7 @@ async def update_task(
     old_status = task.status
     old_due_date = task.due_date
     old_priority_order = task.priority_order
+    before = _task_snapshot(db, task)
     project_priority_order = _project_priority_order(payload.priority) if payload.priority and (payload.project_id or task.project_id) else None
     for field in payload.model_fields_set:
         if field == "priority_order" and getattr(payload, field) is None:
@@ -477,18 +747,14 @@ async def update_task(
         entity_id=task.id,
         safe_metadata={"changed_fields": sorted(payload.model_fields_set)},
     )
-    await _send_task_change_email(
+    _queue_task_notification(
         db,
-        settings,
         user,
         task,
-        old_title=old_title if "title" in payload.model_fields_set else None,
-        old_priority=old_priority if "priority" in payload.model_fields_set else None,
+        action="updated",
+        before=before,
         old_project_id=old_project_id,
         old_assigned_person_id=old_assigned_person_id if "assigned_person_id" in payload.model_fields_set else None,
-        old_status=old_status if "status" in payload.model_fields_set else None,
-        old_due_date=old_due_date if "due_date" in payload.model_fields_set else None,
-        old_priority_order=old_priority_order if "priority_order" in payload.model_fields_set or old_project_id != task.project_id else None,
     )
     db.commit()
     db.refresh(task)
@@ -506,6 +772,7 @@ async def update_task_priority(
     task = db.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    before = _task_snapshot(db, task)
     old_priority = task.priority
     old_priority_order = task.priority_order
     if task.project_id:
@@ -524,14 +791,13 @@ async def update_task_priority(
         safe_metadata={"old_priority": old_priority, "new_priority": payload.priority},
     )
     if old_priority != task.priority or old_priority_order != task.priority_order:
-        await _send_task_change_email(
+        _queue_task_notification(
             db,
-            settings,
             user,
             task,
-            old_priority=old_priority if not task.project_id else None,
+            action="updated",
+            before=before,
             old_project_id=task.project_id,
-            old_priority_order=old_priority_order if old_priority_order != task.priority_order else None,
         )
     db.commit()
     db.refresh(task)
@@ -548,11 +814,12 @@ async def complete_task(
     existing = db.get(Task, task_id)
     old_status = existing.status if existing is not None else None
     old_project_id = existing.project_id if existing is not None else None
+    before = _task_snapshot(db, existing) if existing is not None else None
     task = records.complete_task(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="complete_task", entity_type="task", entity_id=task.id)
-    await _send_task_change_email(db, settings, user, task, old_project_id=old_project_id, old_status=old_status)
+    _queue_task_notification(db, user, task, action="updated", before=before, old_project_id=old_project_id)
     db.commit()
     db.refresh(task)
     return _task_read(db, task)

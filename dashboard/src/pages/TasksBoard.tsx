@@ -15,7 +15,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { apiGet, apiPost, apiPut, errorMessage, shouldRetry } from "../api/client";
+import { apiGet, apiPost, apiPostKeepalive, apiPut, errorMessage, shouldRetry } from "../api/client";
 import { Button, LoadingPanel, Notice, Sheet, secondaryButtonClass } from "../components/ui";
 import { useDragSort } from "../components/useDragSort";
 import type { DragHandleProps } from "../components/useDragSort";
@@ -49,8 +49,9 @@ type PersonGroup = {
   taskCount: number;
 };
 
-type FormDefaults = { personId: string; projectId: string };
+type FormDefaults = { personId: string; projectId: string; compact?: boolean };
 type ProjectFormDefaults = { personId: string };
+type PendingNotifications = { pending: number };
 
 function groupKey(personId: string, projectId: string) {
   return `${personId}:${projectId}`;
@@ -87,6 +88,7 @@ export function TasksBoard() {
   const [creatingProject, setCreatingProject] = useState(false);
   const [formDefaults, setFormDefaults] = useState<FormDefaults>({ personId: "", projectId: "" });
   const [projectDefaults, setProjectDefaults] = useState<ProjectFormDefaults>({ personId: "" });
+  const [hasPendingNotificationChanges, setHasPendingNotificationChanges] = useState(false);
   const [search, setSearch] = useState("");
   const tasks = useQuery({
     queryKey: ["Tasks"],
@@ -103,14 +105,21 @@ export function TasksBoard() {
     queryFn: () => apiGet<Person[]>("/api/dashboard/people"),
     retry: shouldRetry
   });
+  const pendingNotifications = useQuery({
+    queryKey: ["task-notifications"],
+    queryFn: () => apiGet<PendingNotifications>("/api/dashboard/tasks/notifications/pending"),
+    retry: shouldRetry
+  });
   const saveTask = useMutation({
     mutationFn: (payload: Record<string, unknown>) =>
       editing ? apiPut<Task>(`/api/dashboard/tasks/${editing.id}`, payload) : apiPost<Task>("/api/dashboard/tasks", payload),
     onSuccess: () => {
       setEditing(null);
       setCreating(false);
+      setHasPendingNotificationChanges(true);
       void queryClient.invalidateQueries({ queryKey: ["Tasks"] });
       void queryClient.invalidateQueries({ queryKey: ["summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["task-notifications"] });
     }
   });
   const saveProject = useMutation({
@@ -127,10 +136,40 @@ export function TasksBoard() {
     mutationFn: ({ taskId, priorityOrder }: { taskId: string; priorityOrder: number }) =>
       apiPut<Task>(`/api/dashboard/tasks/${taskId}`, { priority_order: priorityOrder }),
     onSuccess: () => {
+      setHasPendingNotificationChanges(true);
       void queryClient.invalidateQueries({ queryKey: ["Tasks"] });
       void queryClient.invalidateQueries({ queryKey: ["summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["task-notifications"] });
     }
   });
+  const notify = useMutation({
+    mutationFn: () => apiPost<{ sent: number; pending: number }>("/api/dashboard/tasks/notifications/flush", {}),
+    onSuccess: () => {
+      setHasPendingNotificationChanges(false);
+      void queryClient.invalidateQueries({ queryKey: ["task-notifications"] });
+    }
+  });
+
+  useEffect(() => {
+    const flush = () => {
+      if (hasPendingNotificationChanges || (pendingNotifications.data?.pending ?? 0) > 0) {
+        apiPostKeepalive("/api/dashboard/tasks/notifications/flush", {});
+        setHasPendingNotificationChanges(false);
+      }
+    };
+    const flushWhenHidden = () => {
+      if (document.visibilityState === "hidden") flush();
+      if (document.visibilityState === "visible") {
+        void queryClient.invalidateQueries({ queryKey: ["task-notifications"] });
+      }
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", flushWhenHidden);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+    };
+  }, [hasPendingNotificationChanges, pendingNotifications.data?.pending, queryClient]);
 
   const groups = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -263,6 +302,14 @@ export function TasksBoard() {
             <Plus size={17} />
             New task
           </Button>
+          <Button
+            className={`${secondaryButtonClass} h-12 rounded-lg`}
+            disabled={(!hasPendingNotificationChanges && (pendingNotifications.data?.pending ?? 0) === 0) || notify.isPending}
+            onClick={() => notify.mutate()}
+          >
+            <Mail size={17} />
+            Notify{pendingNotifications.data?.pending ? ` (${pendingNotifications.data.pending})` : ""}
+          </Button>
           <Button className={`${secondaryButtonClass} h-12 rounded-lg`} onClick={() => openCreateProject({ personId: formPeople[0]?.id ?? "" })}>
             <FolderKanban size={17} />
             New project
@@ -270,7 +317,7 @@ export function TasksBoard() {
         </div>
       </div>
 
-      {(tasks.isError || projects.isError || people.isError || saveTask.isError || saveProject.isError || reorderTask.isError) && (
+      {(tasks.isError || projects.isError || people.isError || saveTask.isError || saveProject.isError || reorderTask.isError || notify.isError) && (
         <Notice title="Something needs attention">
           {tasks.isError
             ? errorMessage(tasks.error)
@@ -282,13 +329,19 @@ export function TasksBoard() {
                   ? errorMessage(saveTask.error)
                   : saveProject.isError
                     ? errorMessage(saveProject.error)
-                    : errorMessage(reorderTask.error)}
+                    : reorderTask.isError
+                      ? errorMessage(reorderTask.error)
+                      : errorMessage(notify.error)}
         </Notice>
       )}
 
       {(creating || editing) && (
         <Sheet
-          description="Assign it to a person, optionally place it inside a project, and set its priority position."
+          description={
+            creating && formDefaults.compact
+              ? "Create it here with a title and description."
+              : "Assign it to a person, optionally place it inside a project, and set its priority position."
+          }
           onClose={() => {
             setCreating(false);
             setEditing(null);
@@ -296,13 +349,14 @@ export function TasksBoard() {
           title={editing ? "Edit task" : "New task"}
         >
           <TaskForm
-            key={`${editing?.id ?? "new"}:${formDefaults.personId}:${formDefaults.projectId}`}
+            key={`${editing?.id ?? "new"}:${formDefaults.personId}:${formDefaults.projectId}:${formDefaults.compact ? "compact" : "full"}`}
             initial={editing}
             isSaving={saveTask.isPending}
             people={formPeople}
             projects={projects.data ?? []}
             defaultPersonId={formDefaults.personId}
             defaultProjectId={formDefaults.projectId}
+            compactCreate={Boolean(formDefaults.compact)}
             onCancel={() => {
               setCreating(false);
               setEditing(null);
@@ -388,7 +442,9 @@ export function TasksBoard() {
                           isMoving={reorderTask.isPending}
                           isOpen={projectOpen}
                           key={key}
-                          onAddTask={() => openCreateForm({ personId: group.person.id, projectId: project.id === "none" ? "" : project.id })}
+                          onAddTask={() =>
+                            openCreateForm({ personId: group.person.id, projectId: project.id === "none" ? "" : project.id, compact: true })
+                          }
                           onEditTask={(task) => {
                             setCreating(false);
                             setFormDefaults({ personId: task.assigned_person_id ?? group.person.id, projectId: task.project_id ?? "" });
@@ -418,6 +474,14 @@ export function TasksBoard() {
         <Button className="h-12 flex-1 rounded-lg" onClick={() => openCreateForm({ personId: formPeople[0]?.id ?? "", projectId: "" })}>
           <Plus size={17} />
           New task
+        </Button>
+        <Button
+          className={`${secondaryButtonClass} h-12 flex-1 rounded-lg`}
+          disabled={(!hasPendingNotificationChanges && (pendingNotifications.data?.pending ?? 0) === 0) || notify.isPending}
+          onClick={() => notify.mutate()}
+        >
+          <Mail size={17} />
+          Notify{pendingNotifications.data?.pending ? ` (${pendingNotifications.data.pending})` : ""}
         </Button>
         <Button
           className={`${secondaryButtonClass} h-12 flex-1 rounded-lg`}
@@ -722,6 +786,7 @@ function TaskForm({
   projects,
   defaultPersonId,
   defaultProjectId,
+  compactCreate,
   onCancel,
   onSave
 }: {
@@ -731,6 +796,7 @@ function TaskForm({
   projects: Project[];
   defaultPersonId: string;
   defaultProjectId: string;
+  compactCreate: boolean;
   onCancel: () => void;
   onSave: (payload: Record<string, unknown>) => void;
 }) {
@@ -744,6 +810,7 @@ function TaskForm({
     status: initial?.status ?? "open",
     due_date: initial?.due_date ? initial.due_date.slice(0, 10) : ""
   });
+  const simpleCreate = compactCreate && !initial;
   const filteredProjects = projects.filter((project) => project.person_id === form.assigned_person_id && project.status !== "cancelled");
   return (
     <form
@@ -762,71 +829,80 @@ function TaskForm({
         });
       }}
     >
-      <label className="block text-sm font-medium md:col-span-2">
+      <label className={`block text-sm font-medium ${simpleCreate ? "md:col-span-3" : "md:col-span-2"}`}>
         Title
         <input className={inputClass} required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
       </label>
-      <label className="block text-sm font-medium">
-        Priority label
-        <select className={inputClass} value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })}>
-          {priorities.map((priority) => (
-            <option key={priority.id} value={priority.id}>
-              {priority.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block text-sm font-medium">
-        Assigned person
-        <select
-          className={inputClass}
-          value={form.assigned_person_id}
-          onChange={(event) => setForm({ ...form, assigned_person_id: event.target.value, project_id: "" })}
-        >
-          <option value="">Unassigned</option>
-          {people.map((person) => (
-            <option key={person.id} value={person.id}>
-              {person.full_name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block text-sm font-medium">
-        Project
-        <select className={inputClass} value={form.project_id} onChange={(event) => setForm({ ...form, project_id: event.target.value })}>
-          <option value="">No project</option>
-          {filteredProjects.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block text-sm font-medium">
-        Project priority position
-        <input
-          className={inputClass}
-          min="1"
-          placeholder="Auto"
-          type="number"
-          value={form.priority_order}
-          onChange={(event) => setForm({ ...form, priority_order: event.target.value })}
-        />
-      </label>
-      <label className="block text-sm font-medium">
-        Status
-        <select className={inputClass} value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
-          {["open", "pending", "in_progress", "completed", "cancelled"].map((status) => (
-            <option key={status} value={status}>
-              {status}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block text-sm font-medium">
-        Due date
-        <input className={inputClass} type="date" value={form.due_date} onChange={(event) => setForm({ ...form, due_date: event.target.value })} />
-      </label>
+      {!simpleCreate && (
+        <>
+          <label className="block text-sm font-medium">
+            Priority label
+            <select className={inputClass} value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })}>
+              {priorities.map((priority) => (
+                <option key={priority.id} value={priority.id}>
+                  {priority.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm font-medium">
+            Assigned person
+            <select
+              className={inputClass}
+              value={form.assigned_person_id}
+              onChange={(event) => setForm({ ...form, assigned_person_id: event.target.value, project_id: "" })}
+            >
+              <option value="">Unassigned</option>
+              {people.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {person.full_name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm font-medium">
+            Project
+            <select className={inputClass} value={form.project_id} onChange={(event) => setForm({ ...form, project_id: event.target.value })}>
+              <option value="">No project</option>
+              {filteredProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm font-medium">
+            Project priority position
+            <input
+              className={inputClass}
+              min="1"
+              placeholder="Auto"
+              type="number"
+              value={form.priority_order}
+              onChange={(event) => setForm({ ...form, priority_order: event.target.value })}
+            />
+          </label>
+          <label className="block text-sm font-medium">
+            Status
+            <select className={inputClass} value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
+              {["open", "pending", "in_progress", "completed", "cancelled"].map((status) => (
+                <option key={status} value={status}>
+                  {status}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm font-medium">
+            Due date
+            <input
+              className={inputClass}
+              type="date"
+              value={form.due_date}
+              onChange={(event) => setForm({ ...form, due_date: event.target.value })}
+            />
+          </label>
+        </>
+      )}
       <label className="block text-sm font-medium md:col-span-3">
         Description
         <textarea className={textareaClass} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
