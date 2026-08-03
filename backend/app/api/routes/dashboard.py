@@ -263,6 +263,7 @@ def _task_snapshot(db: Session, task: Task) -> dict[str, Any]:
         "assigned_person_name": person.full_name if person else "Unassigned",
         "project_id": task.project_id,
         "project_name": project.name if project else "No project",
+        "project_status": project.status if project else None,
         "due_date": _date_value(task.due_date),
     }
 
@@ -321,6 +322,30 @@ def _queue_task_notification(
     db.flush()
 
 
+def _queue_task_deletion_notification(db: Session, user: User, task: Task) -> None:
+    if not _task_change_emails_enabled(db):
+        return
+    people = _task_notification_people(db, task)
+    if not any(person.email for person in people):
+        return
+    before = _task_snapshot(db, task)
+    row, value = _pending_batches(db)
+    users = value.setdefault("users", {})
+    batch = users.setdefault(user.id, {"tasks": {}})
+    tasks = batch.setdefault("tasks", {})
+    tasks[task.id] = {
+        "action": "deleted",
+        "before": before,
+        "after": before,
+        "recipient_ids": sorted({person.id for person in people}),
+        "project_ids": sorted({project_id for project_id in [task.project_id] if project_id}),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    row.value = value
+    flag_modified(row, "value")
+    db.flush()
+
+
 def _snapshot_priority(snapshot: dict[str, Any]) -> str:
     project_id = snapshot.get("project_id")
     if project_id:
@@ -339,6 +364,13 @@ def _change_lines(entry: dict[str, Any]) -> list[str]:
             f"Project: {after.get('project_name', 'No project')}.",
             f"Priority: {_snapshot_priority(after)}.",
         ]
+    if action == "deleted":
+        return [
+            "Deleted task.",
+            f"Was assigned to {before.get('assigned_person_name', 'Unassigned')}.",
+            f"Was in project: {before.get('project_name', 'No project')}.",
+            f"Priority was {_snapshot_priority(before)}.",
+        ]
     lines: list[str] = []
     if before.get("title") != after.get("title"):
         lines.append(f"Title changed from {before.get('title')} to {after.get('title')}.")
@@ -346,6 +378,10 @@ def _change_lines(entry: dict[str, Any]) -> list[str]:
         lines.append("Description updated.")
     if before.get("project_id") != after.get("project_id"):
         lines.append(f"Project changed from {before.get('project_name', 'No project')} to {after.get('project_name', 'No project')}.")
+    elif before.get("project_name") != after.get("project_name"):
+        lines.append(f"Project renamed from {before.get('project_name', 'No project')} to {after.get('project_name', 'No project')}.")
+    if before.get("project_status") != after.get("project_status"):
+        lines.append(f"Project status changed from {before.get('project_status') or 'none'} to {after.get('project_status') or 'none'}.")
     if before.get("assigned_person_id") != after.get("assigned_person_id"):
         lines.append(
             f"Assignee changed from {before.get('assigned_person_name', 'Unassigned')} "
@@ -409,6 +445,8 @@ def _task_digest_subject(recipient: Person, entries: list[dict[str, Any]]) -> st
         title = str(after.get("title") or "task")
         if entry.get("action") == "created":
             return _clip_subject(f"Task created: {title}")
+        if entry.get("action") == "deleted":
+            return _clip_subject(f"Task deleted: {title}")
         changed_labels: list[str] = []
         if any(line.startswith("Priority changed") for line in lines):
             changed_labels.append("priority")
@@ -639,12 +677,46 @@ def update_project(
         raise HTTPException(status_code=404, detail="Project not found")
     if "person_id" in payload.model_fields_set and payload.person_id and db.get(Person, payload.person_id) is None:
         raise HTTPException(status_code=404, detail="Person not found")
+    affected_tasks = list(db.scalars(select(Task).where(Task.project_id == project.id, Task.status.not_in(["completed", "cancelled"]))))
+    task_snapshots = {task.id: _task_snapshot(db, task) for task in affected_tasks}
     for field in payload.model_fields_set:
         setattr(project, field, getattr(payload, field))
+    db.flush()
+    for task in affected_tasks:
+        _queue_task_notification(db, user, task, action="updated", before=task_snapshots[task.id], old_project_id=project.id)
     write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="update_project", entity_type="project", entity_id=project.id)
     db.commit()
     db.refresh(project)
     return _project_read(db, project)
+
+
+@router.delete("/projects/{project_id}")
+def delete_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, int | bool]:
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    affected_tasks = list(db.scalars(select(Task).where(Task.project_id == project.id, Task.status.not_in(["completed", "cancelled"]))))
+    snapshots = {task.id: _task_snapshot(db, task) for task in affected_tasks}
+    for task in affected_tasks:
+        task.project_id = None
+        task.priority_order = 0
+        _queue_task_notification(db, user, task, action="updated", before=snapshots[task.id], old_project_id=project.id)
+    write_audit(
+        db,
+        actor_type="dashboard_user",
+        actor_id=user.id,
+        action="delete_project",
+        entity_type="project",
+        entity_id=project.id,
+        safe_metadata={"detached_task_count": len(affected_tasks), "project_name": project.name},
+    )
+    db.delete(project)
+    db.commit()
+    return {"deleted": True, "detached_tasks": len(affected_tasks)}
 
 
 @router.get("/tasks", response_model=list[TaskRead])
@@ -866,6 +938,25 @@ async def update_task(
     db.commit()
     db.refresh(task)
     return _task_read(db, task)
+
+
+@router.delete("/tasks/{task_id}")
+def delete_task(
+    task_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, bool]:
+    task = db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    old_project_id = task.project_id
+    _queue_task_deletion_notification(db, user, task)
+    write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="delete_task", entity_type="task", entity_id=task.id)
+    db.delete(task)
+    db.flush()
+    _normalize_project_priority_sequence(db, old_project_id)
+    db.commit()
+    return {"deleted": True}
 
 
 @router.post("/tasks/{task_id}/priority", response_model=TaskRead)

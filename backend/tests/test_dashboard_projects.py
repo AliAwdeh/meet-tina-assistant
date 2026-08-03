@@ -319,3 +319,82 @@ def test_dashboard_task_notification_digest_removes_redundant_priority_changes(c
         assert "Priority changed from Low to Urgent" in email.text_body
         assert "Priority changed from High" not in email.text_body
         assert "Priority changed from Medium" not in email.text_body
+
+
+def test_dashboard_delete_task_queues_email_and_normalizes_project_priority(client: TestClient) -> None:
+    _login(client)
+    person_response = client.post("/api/dashboard/people", json={"full_name": "Delete Notify", "email": "delete-notify@example.com"})
+    assert person_response.status_code == 200
+    person = person_response.json()
+    project_response = client.post("/api/dashboard/projects", json={"person_id": person["id"], "name": "Deletion Project"})
+    assert project_response.status_code == 200
+    project = project_response.json()
+    first = client.post(
+        "/api/dashboard/tasks",
+        json={"title": "Delete this task", "assigned_person_id": person["id"], "project_id": project["id"], "priority_order": 1},
+    )
+    second = client.post(
+        "/api/dashboard/tasks",
+        json={"title": "Keep this task", "assigned_person_id": person["id"], "project_id": project["id"], "priority_order": 2},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert _flush_notifications(client)["sent"] == 1
+
+    delete_response = client.delete(f"/api/dashboard/tasks/{first.json()['id']}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["deleted"] is True
+    assert _flush_notifications(client)["sent"] == 1
+
+    with SessionLocal() as db:
+        assert db.get(Task, first.json()["id"]) is None
+        kept = db.get(Task, second.json()["id"])
+        assert kept is not None
+        assert kept.priority_order == 1
+        email = db.scalar(select(Email).order_by(Email.created_at.desc()))
+        assert email is not None
+        assert email.subject == "Task deleted: Delete this task"
+        assert "Deleted task." in email.text_body
+        assert "Was in project: Deletion Project" in email.text_body
+
+
+def test_dashboard_project_update_and_delete_notify_related_people(client: TestClient) -> None:
+    _login(client)
+    person_response = client.post("/api/dashboard/people", json={"full_name": "Project Notify", "email": "project-notify@example.com"})
+    assert person_response.status_code == 200
+    person = person_response.json()
+    project_response = client.post("/api/dashboard/projects", json={"person_id": person["id"], "name": "Old Project"})
+    assert project_response.status_code == 200
+    project = project_response.json()
+    task_response = client.post(
+        "/api/dashboard/tasks",
+        json={"title": "Project attached task", "assigned_person_id": person["id"], "project_id": project["id"], "priority_order": 1},
+    )
+    assert task_response.status_code == 200
+    assert _flush_notifications(client)["sent"] == 1
+
+    rename_response = client.put(f"/api/dashboard/projects/{project['id']}", json={"name": "Renamed Project", "status": "paused"})
+    assert rename_response.status_code == 200
+    assert _flush_notifications(client)["sent"] == 1
+
+    with SessionLocal() as db:
+        email = db.scalar(select(Email).order_by(Email.created_at.desc()))
+        assert email is not None
+        assert email.subject == "Task updated: Project attached task"
+        assert "Project renamed from Old Project to Renamed Project" in email.text_body
+        assert "Project status changed from active to paused" in email.text_body
+
+    delete_response = client.delete(f"/api/dashboard/projects/{project['id']}")
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"deleted": True, "detached_tasks": 1}
+    assert _flush_notifications(client)["sent"] == 1
+
+    with SessionLocal() as db:
+        assert db.get(Project, project["id"]) is None
+        task = db.get(Task, task_response.json()["id"])
+        assert task is not None
+        assert task.project_id is None
+        assert task.priority_order == 0
+        email = db.scalar(select(Email).order_by(Email.created_at.desc()))
+        assert email is not None
+        assert "Project changed from Renamed Project to No project" in email.text_body

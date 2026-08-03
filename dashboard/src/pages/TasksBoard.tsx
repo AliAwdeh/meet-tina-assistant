@@ -11,11 +11,12 @@ import {
   Plus,
   Save,
   Search,
+  Trash2,
   UserRound,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { apiGet, apiPost, apiPostKeepalive, apiPut, errorMessage, shouldRetry } from "../api/client";
+import { apiDelete, apiGet, apiPost, apiPostKeepalive, apiPut, errorMessage, shouldRetry } from "../api/client";
 import { Button, LoadingPanel, Notice, Sheet, secondaryButtonClass } from "../components/ui";
 import { useDragSort } from "../components/useDragSort";
 import type { DragHandleProps } from "../components/useDragSort";
@@ -42,6 +43,7 @@ type ProjectGroup = {
   name: string;
   personId: string;
   status: string;
+  source?: Project;
   tasks: Task[];
 };
 
@@ -98,6 +100,7 @@ export function TasksBoard() {
   const [editing, setEditing] = useState<Task | null>(null);
   const [creating, setCreating] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [formDefaults, setFormDefaults] = useState<FormDefaults>({ personId: "", projectId: "" });
   const [projectDefaults, setProjectDefaults] = useState<ProjectFormDefaults>({ personId: "" });
   const [hasPendingNotificationChanges, setHasPendingNotificationChanges] = useState(false);
@@ -135,13 +138,39 @@ export function TasksBoard() {
     }
   });
   const saveProject = useMutation({
-    mutationFn: (payload: Record<string, unknown>) => apiPost<Project>("/api/dashboard/projects", payload),
+    mutationFn: (payload: Record<string, unknown>) =>
+      editingProject ? apiPut<Project>(`/api/dashboard/projects/${editingProject.id}`, payload) : apiPost<Project>("/api/dashboard/projects", payload),
     onSuccess: (project) => {
       setCreatingProject(false);
+      setEditingProject(null);
+      setHasPendingNotificationChanges(true);
       setOpenPeople((current) => ({ ...current, [project.person_id]: true }));
       setOpenProjects((current) => ({ ...current, [groupKey(project.person_id, project.id)]: true }));
       void queryClient.invalidateQueries({ queryKey: ["Projects"] });
+      void queryClient.invalidateQueries({ queryKey: ["Tasks"] });
       void queryClient.invalidateQueries({ queryKey: ["summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["task-notifications"] });
+    }
+  });
+  const deleteProject = useMutation({
+    mutationFn: (projectId: string) => apiDelete<{ deleted: boolean; detached_tasks: number }>(`/api/dashboard/projects/${projectId}`),
+    onSuccess: () => {
+      setHasPendingNotificationChanges(true);
+      void queryClient.invalidateQueries({ queryKey: ["Projects"] });
+      void queryClient.invalidateQueries({ queryKey: ["Tasks"] });
+      void queryClient.invalidateQueries({ queryKey: ["summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["task-notifications"] });
+    }
+  });
+  const deleteTask = useMutation({
+    mutationFn: (taskId: string) => apiDelete<{ deleted: boolean }>(`/api/dashboard/tasks/${taskId}`),
+    onSuccess: () => {
+      setEditing(null);
+      setCreating(false);
+      setHasPendingNotificationChanges(true);
+      void queryClient.invalidateQueries({ queryKey: ["Tasks"] });
+      void queryClient.invalidateQueries({ queryKey: ["summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["task-notifications"] });
     }
   });
   const reorderTask = useMutation({
@@ -198,6 +227,7 @@ export function TasksBoard() {
             name: project.name,
             personId: person.id,
             status: project.status,
+            source: project,
             tasks: [] as Task[]
           })),
           { id: "none", name: "No project", personId: person.id, status: "active", tasks: [] }
@@ -268,8 +298,16 @@ export function TasksBoard() {
   const openCreateProject = (defaults: ProjectFormDefaults) => {
     setCreating(false);
     setEditing(null);
+    setEditingProject(null);
     setProjectDefaults(defaults);
     setCreatingProject(true);
+  };
+
+  const openEditProject = (project: Project) => {
+    setCreating(false);
+    setEditing(null);
+    setCreatingProject(false);
+    setEditingProject(project);
   };
 
   if (tasks.isLoading || projects.isLoading || people.isLoading) return <LoadingPanel label="Loading your board" />;
@@ -331,7 +369,15 @@ export function TasksBoard() {
         </div>
       </div>
 
-      {(tasks.isError || projects.isError || people.isError || saveTask.isError || saveProject.isError || reorderTask.isError || notify.isError) && (
+      {(tasks.isError ||
+        projects.isError ||
+        people.isError ||
+        saveTask.isError ||
+        saveProject.isError ||
+        deleteProject.isError ||
+        deleteTask.isError ||
+        reorderTask.isError ||
+        notify.isError) && (
         <Notice title="Something needs attention">
           {tasks.isError
             ? errorMessage(tasks.error)
@@ -343,9 +389,13 @@ export function TasksBoard() {
                   ? errorMessage(saveTask.error)
                   : saveProject.isError
                     ? errorMessage(saveProject.error)
-                    : reorderTask.isError
-                      ? errorMessage(reorderTask.error)
-                      : errorMessage(notify.error)}
+                    : deleteProject.isError
+                      ? errorMessage(deleteProject.error)
+                      : deleteTask.isError
+                        ? errorMessage(deleteTask.error)
+                        : reorderTask.isError
+                          ? errorMessage(reorderTask.error)
+                          : errorMessage(notify.error)}
         </Notice>
       )}
 
@@ -376,22 +426,30 @@ export function TasksBoard() {
               setEditing(null);
             }}
             onSave={(payload) => saveTask.mutate(payload)}
+            onDelete={initialDeleteHandler(editing, deleteTask.mutate)}
           />
         </Sheet>
       )}
 
-      {creatingProject && (
+      {(creatingProject || editingProject) && (
         <Sheet
-          description="Create it under a person, then add tasks inside it."
-          onClose={() => setCreatingProject(false)}
-          title="New project"
+          description={editingProject ? "Update the project owner, name, description, or status." : "Create it under a person, then add tasks inside it."}
+          onClose={() => {
+            setCreatingProject(false);
+            setEditingProject(null);
+          }}
+          title={editingProject ? "Edit project" : "New project"}
         >
           <ProjectForm
-            key={projectDefaults.personId}
+            key={editingProject?.id ?? projectDefaults.personId}
+            initial={editingProject}
             defaultPersonId={projectDefaults.personId}
             isSaving={saveProject.isPending}
             people={formPeople}
-            onCancel={() => setCreatingProject(false)}
+            onCancel={() => {
+              setCreatingProject(false);
+              setEditingProject(null);
+            }}
             onSave={(payload) => saveProject.mutate(payload)}
           />
         </Sheet>
@@ -464,6 +522,19 @@ export function TasksBoard() {
                             setFormDefaults({ personId: task.assigned_person_id ?? group.person.id, projectId: task.project_id ?? "" });
                             setEditing(task);
                           }}
+                          onDeleteTask={(task) => {
+                            if (window.confirm(`Delete task "${task.title}"?`)) deleteTask.mutate(task.id);
+                          }}
+                          onEditProject={project.source ? () => openEditProject(project.source as Project) : undefined}
+                          onDeleteProject={
+                            project.source
+                              ? () => {
+                                  if (window.confirm(`Delete project "${project.name}"? Its tasks will move to No project.`)) {
+                                    deleteProject.mutate(project.id);
+                                  }
+                                }
+                              : undefined
+                          }
                           onReorder={(taskId, priorityOrder) => reorderTask.mutate({ taskId, priorityOrder })}
                           onToggle={() => setOpenProjects((current) => ({ ...current, [key]: !projectOpen }))}
                           project={project}
@@ -509,6 +580,13 @@ export function TasksBoard() {
   );
 }
 
+function initialDeleteHandler(initial: Task | null, onDelete: (taskId: string) => void) {
+  if (!initial) return undefined;
+  return () => {
+    if (window.confirm(`Delete task "${initial.title}"?`)) onDelete(initial.id);
+  };
+}
+
 function ProjectSection({
   project,
   isOpen,
@@ -516,7 +594,10 @@ function ProjectSection({
   onToggle,
   onAddTask,
   onReorder,
-  onEditTask
+  onEditTask,
+  onDeleteTask,
+  onEditProject,
+  onDeleteProject
 }: {
   project: ProjectGroup;
   isOpen: boolean;
@@ -525,6 +606,9 @@ function ProjectSection({
   onAddTask: () => void;
   onReorder: (taskId: string, priorityOrder: number) => void;
   onEditTask: (task: Task) => void;
+  onDeleteTask: (task: Task) => void;
+  onEditProject?: () => void;
+  onDeleteProject?: () => void;
 }) {
   const isRealProject = project.id !== "none";
   const rankedProjectTasks = isRealProject ? orderedProjectTasks(project.tasks) : project.tasks;
@@ -686,6 +770,26 @@ function ProjectSection({
             </span>
           </span>
         </button>
+        {isRealProject && (
+          <>
+            <button
+              aria-label={`Edit project ${project.name}`}
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-md text-stone-400 transition hover:bg-stone-100 hover:text-ink sm:h-8 sm:w-8"
+              onClick={onEditProject}
+              type="button"
+            >
+              <Pencil size={14} />
+            </button>
+            <button
+              aria-label={`Delete project ${project.name}`}
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-md text-stone-400 transition hover:bg-coral/10 hover:text-coral sm:h-8 sm:w-8"
+              onClick={onDeleteProject}
+              type="button"
+            >
+              <Trash2 size={14} />
+            </button>
+          </>
+        )}
         <button
           aria-label={`New task in ${project.name}`}
           className="inline-flex h-10 w-10 shrink-0 items-center justify-center gap-1 rounded-md border border-stone-200 text-xs font-medium text-stone-600 transition hover:border-ink hover:text-ink sm:h-8 sm:w-auto sm:px-2.5"
@@ -722,6 +826,7 @@ function ProjectSection({
                         isSorting={Boolean(pendingDrag)}
                         key={task.id}
                         onEdit={() => onEditTask(task)}
+                        onDelete={() => onDeleteTask(task)}
                         position={-1}
                         task={task}
                         transform={pendingDrag?.taskId === task.id ? `translate3d(0, ${pendingDrag.dy}px, 0)` : undefined}
@@ -756,6 +861,7 @@ function ProjectSection({
                       isSorting={sort.isDragging}
                       key={task.id}
                       onEdit={() => onEditTask(task)}
+                      onDelete={() => onDeleteTask(task)}
                       position={sort.positionOf(index)}
                       task={task}
                       transform={sort.transformFor(index)}
@@ -782,6 +888,7 @@ function TaskRow({
   innerRef,
   handleProps,
   onEdit,
+  onDelete,
   unprioritized = false,
   useProjectPriority
 }: {
@@ -794,6 +901,7 @@ function TaskRow({
   innerRef: (el: HTMLElement | null) => void;
   handleProps: DragHandleProps;
   onEdit: () => void;
+  onDelete: () => void;
   unprioritized?: boolean;
   useProjectPriority: boolean;
 }) {
@@ -860,6 +968,14 @@ function TaskRow({
       >
         <Pencil size={15} />
       </button>
+      <button
+        aria-label="Delete task"
+        className="grid h-10 w-10 shrink-0 place-items-center rounded-md text-stone-400 transition hover:bg-coral/10 hover:text-coral sm:h-9 sm:w-9 sm:opacity-0 sm:group-hover:opacity-100"
+        onClick={onDelete}
+        type="button"
+      >
+        <Trash2 size={15} />
+      </button>
     </article>
   );
 }
@@ -871,12 +987,14 @@ const textareaClass =
   "mt-1 min-h-20 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-base outline-none transition focus:border-ink sm:text-sm";
 
 function ProjectForm({
+  initial,
   isSaving,
   people,
   defaultPersonId,
   onCancel,
   onSave
 }: {
+  initial: Project | null;
   isSaving: boolean;
   people: Person[];
   defaultPersonId: string;
@@ -884,10 +1002,10 @@ function ProjectForm({
   onSave: (payload: Record<string, unknown>) => void;
 }) {
   const [form, setForm] = useState({
-    person_id: defaultPersonId || people[0]?.id || "",
-    name: "",
-    description: "",
-    status: "active"
+    person_id: initial?.person_id ?? defaultPersonId ?? people[0]?.id ?? "",
+    name: initial?.name ?? "",
+    description: initial?.description ?? "",
+    status: initial?.status ?? "active"
   });
   return (
     <form
@@ -958,7 +1076,8 @@ function TaskForm({
   defaultProjectId,
   compactCreate,
   onCancel,
-  onSave
+  onSave,
+  onDelete
 }: {
   initial: Task | null;
   isSaving: boolean;
@@ -969,6 +1088,7 @@ function TaskForm({
   compactCreate: boolean;
   onCancel: () => void;
   onSave: (payload: Record<string, unknown>) => void;
+  onDelete?: () => void;
 }) {
   const [form, setForm] = useState({
     title: initial?.title ?? "",
@@ -1082,6 +1202,17 @@ function TaskForm({
           <Save size={16} />
           {isSaving ? "Saving" : "Save"}
         </Button>
+        {onDelete && (
+          <Button
+            className="h-12 flex-1 border-coral bg-coral/10 text-coral hover:bg-coral/15 focus:ring-coral sm:h-10 sm:flex-none"
+            disabled={isSaving}
+            onClick={onDelete}
+            type="button"
+          >
+            <Trash2 size={16} />
+            Delete
+          </Button>
+        )}
         <Button
           className={`${secondaryButtonClass} h-12 flex-1 sm:h-10 sm:flex-none`}
           disabled={isSaving}

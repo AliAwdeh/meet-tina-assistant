@@ -1,6 +1,7 @@
 import logging
 import re
 from datetime import UTC, datetime, timedelta
+from html import escape
 from itertools import zip_longest
 from pathlib import Path
 from typing import Any, TypedDict
@@ -18,6 +19,7 @@ from app.integrations.ai.client import chat_model, structured_json
 from app.models.entities import AppSetting, Conversation, Email, EmailRecipient, Meeting, Message, Person, Project, Reminder, Task
 from app.schemas.agent import ActionPlan, AgentResult, ClassificationResult, ExtractedAction
 from app.schemas.domain import NormalizedMessage, NotificationSettings, PersonCreate, ReminderCreate, TaskCreate
+from app.services.audit import write_audit
 
 logger = logging.getLogger(__name__)
 EMAIL_RE = re.compile(r"(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})", re.IGNORECASE)
@@ -163,7 +165,7 @@ def _find_referenced_tasks(db: Session, text: str, people: list[Person], last_ta
         tasks.append(last_task)
     tokens = [token for token in _query_tokens(text) if len(token) > 3]
     lowered = text.lower()
-    should_filter = not people or any(word in lowered for word in ["change", "update", "move", "set", "make", "mark"])
+    should_filter = not people or any(word in lowered for word in ["change", "update", "move", "set", "make", "mark", "delete", "remove"])
     if tokens and should_filter:
         matching = []
         for task in tasks:
@@ -262,6 +264,18 @@ def _extract_priority(text: str) -> str | None:
     for priority, priority_patterns in patterns.items():
         if any(re.search(pattern, lowered) for pattern in priority_patterns):
             return priority
+    return None
+
+
+def _extract_project_status(text: str) -> str | None:
+    lowered = text.lower()
+    for status in ("active", "paused", "completed", "cancelled"):
+        if re.search(rf"\b{status}\b", lowered):
+            return status
+    if re.search(r"\bpause\b", lowered):
+        return "paused"
+    if re.search(r"\bcancel\b", lowered):
+        return "cancelled"
     return None
 
 
@@ -427,6 +441,50 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
             return ExtractedAction(action_type="query_records", query_target="reminders", target_text=text, confidence=0.82)
         if "everything" in lowered or "summary" in lowered:
             return ExtractedAction(action_type="query_records", query_target="summary", target_text=text, confidence=0.82)
+    delete_project_requested = bool(
+        re.search(r"\b(?:delete|remove)\s+(?:the\s+|this\s+|that\s+)?project\b", lowered)
+        or re.search(r"\b(?:delete|remove)\s+[A-Za-z0-9 ()&._'-]{1,80}\s+project\b", text, flags=re.IGNORECASE)
+    )
+    delete_task_requested = bool(
+        re.search(r"\b(?:delete|remove)\s+(?:the\s+|this\s+|that\s+)?(?:task|todo)\b", lowered)
+        or re.search(r"\b(?:delete|remove)\s+(?:it|that|this)\b", lowered)
+    )
+    if delete_project_requested:
+        return ExtractedAction(
+            action_type="delete_project",
+            project_name=project_name,
+            target_text=text,
+            confidence=0.82,
+            missing_fields=[] if project_name or state.get("referenced_project") else ["project"],
+        )
+    if delete_task_requested:
+        related_task = (state.get("referenced_tasks") or [None])[0] or last_task
+        return ExtractedAction(
+            action_type="delete_task",
+            related_task_id=related_task.id if related_task is not None else None,
+            target_text=text,
+            confidence=0.82,
+            missing_fields=[] if related_task is not None else ["task"],
+        )
+    update_words = ["change", "update", "move", "set", "make", "rename", "edit"]
+    if "project" in lowered and any(word in lowered for word in update_words) and not any(word in lowered for word in ["task", "todo"]):
+        title_hint = _update_title_hint(text) if any(word in lowered for word in ["rename", "called", "named", "title"]) else None
+        status_hint = _extract_project_status(text)
+        return ExtractedAction(
+            action_type="update_project",
+            title=title_hint,
+            project_name=project_name,
+            status=status_hint,  # type: ignore[arg-type]
+            person_names=person_names,
+            person_emails=person_emails,
+            target_text=text,
+            confidence=0.82,
+            missing_fields=(
+                []
+                if (project_name or state.get("referenced_project")) and (title_hint or status_hint or person_names)
+                else ["project", "change"]
+            ),
+        )
     completion_words = ["complete", "completed", "done", "mark"]
     task_references = ["task", "that", "it"]
     if any(word in lowered for word in completion_words) and any(word in lowered for word in task_references):
@@ -451,7 +509,6 @@ def _heuristic_action(state: AssistantState) -> ExtractedAction:
             priority=explicit_priority,  # type: ignore[arg-type]
             confidence=0.76,
         )
-    update_words = ["change", "update", "move", "set", "make", "rename", "edit"]
     plural_task_references = ["them", "those", "these"]
     if any(word in lowered for word in update_words) and any(
         word in lowered for word in task_references + plural_task_references + ["priority", "project"]
@@ -571,6 +628,12 @@ def _action_intent(action: ExtractedAction) -> str:
         return "complete_task"
     if action.action_type == "update_task":
         return "update_task"
+    if action.action_type == "update_project":
+        return "update_project"
+    if action.action_type == "delete_task":
+        return "delete_task"
+    if action.action_type == "delete_project":
+        return "delete_project"
     if action.action_type == "send_email":
         return "send_email"
     if action.action_type == "query_records":
@@ -626,23 +689,32 @@ def _planner_system_prompt() -> str:
         "You are the intent classifier and planner for Meet Tina. You own semantic interpretation; "
         "the code layer will only validate entities and execute explicit tools. Build an ordered platform action plan.\n"
         "Return only JSON in this shape: {\"actions\": [ExtractedAction, ...]}.\n"
-        "Allowed action_type values: upsert_person, create_task, update_task, complete_task, create_reminder, "
-        "send_email, query_records, no_action.\n"
+        "Allowed action_type values: upsert_person, create_task, update_task, complete_task, delete_task, "
+        "update_project, delete_project, create_reminder, send_email, query_records, no_action.\n"
         "Rules:\n"
         "- Pick concrete actions from the action contract; do not answer with future-tense promises when tools can act now.\n"
         "- Treat the user as Sami, a senior manager. Records describe Sami's people, teams, projects, tasks, and meetings.\n"
         "- Decide from meaning, not from brittle phrase templates. Names, projects, and task titles may appear in any order.\n"
         "- If the user asks to create/add/make/open a new task, plan create_task, not update_task.\n"
-        "- For new tasks, person assignment is primary. Put the person in person_names; do not use a project as a stand-in for the assignee.\n"
-        "- Leave project_name/project_id empty on create_task unless the latest message explicitly names a project or says same/that/current project.\n"
-        "- Do not set priority_order on create_task for a project task unless Sami explicitly gives a rank/priority; unranked project tasks are placed later in the dashboard.\n"
-        "- If Sami asks for a task for a person without naming a project, create it for the person now; the reply will list available projects as optional choices.\n"
-        "- If Sami asks you to choose/list available projects before placing the task, use query_records or ask one project-selection question instead of guessing.\n"
+        "- For new tasks, person assignment is primary. Put the person in person_names; "
+        "do not use a project as a stand-in for the assignee.\n"
+        "- Leave project_name/project_id empty on create_task unless the latest message explicitly names a project "
+        "or says same/that/current project.\n"
+        "- Do not set priority_order on create_task for a project task unless Sami explicitly gives a rank/priority; "
+        "unranked project tasks are placed later in the dashboard.\n"
+        "- If Sami asks for a task for a person without naming a project, create it for the person now; "
+        "the reply will list available projects as optional choices.\n"
+        "- If Sami asks you to choose/list available projects before placing the task, use query_records or ask one "
+        "project-selection question instead of guessing.\n"
         "- A task title is the work to be done, not the command text around it. For example, in "
         "'create a new task for Ali called Travel Assist', person_names is ['Ali'] and title is 'Travel Assist'.\n"
         "- If the user creates a person and then says he/she/they in the same message, bind the pronoun to that newly named person.\n"
         "- 'X is responsible for Y and Z project' usually means person X owns project Z and has task Y under that project.\n"
         "- Only move/update an existing task when the user clearly says move/change/update/mark and a task is identifiable.\n"
+        "- For delete/remove requests, use delete_task for a task and delete_project for a project. "
+        "Do not use status=cancelled unless Sami asks to cancel instead of delete.\n"
+        "- For project rename/status/owner changes, use update_project. Use project_name for the current project to find, "
+        "title for the new project name, status for status changes, and person_names only when changing owner.\n"
         "- Do not plan query_records for update/edit/change/apply requests unless the user is only asking to inspect data.\n"
         "- Do not attach a new task to an old conversation project unless the user explicitly refers to it.\n"
         "- If the user names a person without an email, use person_names with an empty person_emails list.\n"
@@ -652,14 +724,17 @@ def _planner_system_prompt() -> str:
         "per task with related_task_id and title set to the suggested clean title.\n"
         "- For plural updates, return one update_task per affected task or one update_task with the shared field change "
         "when every referenced task should receive the same priority/project/assignee/due date.\n"
-        "- Only include person_names/person_emails on update_task when Sami explicitly asks to assign, reassign, or move responsibility to that person.\n"
-        "- For existing project tasks, priority_order is the priority: 1 urgent, 2 high, 3 medium, 4 low, and 5+ as a number. Use priority only as a loose label for person-only tasks.\n"
+        "- Only include person_names/person_emails on update_task when Sami explicitly asks to assign, reassign, "
+        "or move responsibility to that person.\n"
+        "- For existing project tasks, priority_order is the priority: 1 urgent, 2 high, 3 medium, 4 low, "
+        "and 5+ as a number. Use priority only as a loose label for person-only tasks.\n"
         "- Use related_task_id only from the platform context when updating/completing/emailing an existing task.\n"
         "- For send_email, if the recipient has no email in platform context and the user did not provide one, "
         "set missing_fields to ['recipient_email'] instead of pretending email can be sent.\n"
         "- Ask for missing_fields instead of guessing when multiple people/tasks/projects could match.\n"
         "- Never let previous conversation memory override a newly named person in the latest message.\n"
-        "- If planning update_task, include the fields to change: priority_order, priority, project_name/project_id, title, due_at, status, or target_text."
+        "- If planning update_task, include the fields to change: priority_order, priority, project_name/project_id, "
+        "title, due_at, status, or target_text."
     )
 
 
@@ -676,6 +751,8 @@ def _normalize_planned_actions(state: AssistantState, actions: list[ExtractedAct
     if not actions:
         return fallback_actions
     if fallback_primary.action_type != "no_action" and all(action.action_type == "no_action" for action in actions):
+        return fallback_actions
+    if fallback_primary.action_type == "create_task" and not any(action.action_type == "create_task" for action in actions):
         return fallback_actions
     if fallback_primary.action_type == "query_records":
         planned_query = next((action for action in actions if action.action_type == "query_records"), None)
@@ -816,8 +893,8 @@ def _prompt_with_context(state: AssistantState) -> str:
     lines = [
         "Available platform actions:",
         "- create/update people",
-        "- create/update projects owned by people",
-        "- create/update/move/complete tasks assigned to people and optionally attached to projects",
+        "- create/update/delete projects owned by people",
+        "- create/update/move/complete/delete tasks assigned to people and optionally attached to projects",
         "- change project task priority by priority_order, where 1 urgent, 2 high, 3 medium, 4 low, and 5+ is the number",
         "- change loose low/medium/high/urgent priority labels for person-only tasks",
         "- send task-related emails through n8n",
@@ -923,7 +1000,7 @@ def _format_tasks_by_project(db: Session, tasks: list[Task]) -> str:
             ),
         )
         lines.append(f"{labels[key]}:")
-        for index, task in enumerate(rows, start=1):
+        for task in rows:
             priority = _project_priority_name(task.priority_order) if key != "none" else task.priority.title()
             person = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
             assignee = f" - {person.full_name}" if person else ""
@@ -951,6 +1028,30 @@ def _project_name(db: Session, project_id: str | None) -> str:
         return "No project"
     project = db.get(Project, project_id)
     return project.name if project else "Unknown project"
+
+
+def _find_project_for_action(db: Session, state: AssistantState, action: ExtractedAction) -> Project | None:
+    if action.project_id:
+        return db.get(Project, action.project_id)
+    project_name = _compact_label(action.project_name)
+    if project_name:
+        candidates = list(db.scalars(select(Project).where(Project.name.ilike(project_name)).limit(5)))
+        if len(candidates) == 1:
+            return candidates[0]
+        referenced_project = state.get("referenced_project")
+        if referenced_project and referenced_project.name.lower() == project_name.lower():
+            return referenced_project
+        referenced_people = state.get("referenced_people", [])
+        referenced_person_ids = {person.id for person in referenced_people}
+        for project in candidates:
+            if project.person_id in referenced_person_ids:
+                return project
+        fuzzy = list(db.scalars(select(Project).where(Project.name.ilike(f"%{project_name}%")).limit(5)))
+        if len(fuzzy) == 1:
+            return fuzzy[0]
+        if referenced_project and any(project.id == referenced_project.id for project in fuzzy):
+            return referenced_project
+    return state.get("referenced_project")
 
 
 def _ordered_project_tasks(db: Session, project_id: str) -> list[Task]:
@@ -1093,6 +1194,15 @@ def _action_has_explicit_assignee(action: ExtractedAction) -> bool:
     return bool(action.person_names or action.person_emails)
 
 
+def _project_owner_change_requested(text: str) -> bool:
+    lowered = text.lower()
+    return bool(
+        re.search(r"\b(?:owner|owned|belongs|responsible)\b", lowered)
+        or re.search(r"\b(?:assign|reassign|transfer|move)\b.+\bproject\b.+\b(?:to|under|for)\b", lowered)
+        or re.search(r"\bproject\b.+\b(?:to|under)\b", lowered)
+    )
+
+
 def _matching_person_from_context(people: list[Person], name: str | None, email: str | None) -> Person | None:
     lowered_name = (name or "").lower().strip()
     lowered_email = (email or "").lower().strip()
@@ -1122,7 +1232,10 @@ async def _send_task_change_email(
     people = _task_notification_people(db, task, old_project_id=old_project_id)
     changes: list[str] = []
     if old_priority_order is not None and old_priority_order != task.priority_order:
-        changes.append(f"Priority changed from {_project_priority_name(old_priority_order)} to {_project_priority_name(task.priority_order)}.")
+        changes.append(
+            f"Priority changed from {_project_priority_name(old_priority_order)} "
+            f"to {_project_priority_name(task.priority_order)}."
+        )
     elif old_priority is not None and old_priority != task.priority:
         changes.append(f"Priority changed from {old_priority.title()} to {task.priority.title()}.")
     if old_project_id != task.project_id:
@@ -1168,6 +1281,116 @@ async def _send_task_created_email(db: Session, settings: Settings, message: Nor
     )
 
 
+async def _send_task_deleted_email(db: Session, settings: Settings, message: NormalizedMessage, task: Task) -> None:
+    if not _task_change_emails_enabled(db):
+        return
+    people = _task_notification_people(db, task)
+    if not people:
+        return
+    lines = [f'The task "{task.title}" was deleted.', "", _task_email_context(db, task)]
+    priority_list = _project_priority_list(db, task.project_id)
+    if priority_list:
+        lines.extend(["", priority_list])
+    await send_email_tool(
+        ToolContext(db=db, actor_type="openwa", actor_id=message.sender_phone, request_id=f"task-delete:{message.external_message_id}"),
+        settings,
+        to_people=people,
+        subject=f"Task deleted: {task.title}",
+        text_body="\n".join(lines),
+        related_task=task,
+    )
+
+
+def _project_related_people(db: Session, project: Project, tasks: list[Task], *, old_person_id: str | None = None) -> list[Person]:
+    people_by_id: dict[str, Person] = {}
+    for person_id in {project.person_id, old_person_id}:
+        if not person_id:
+            continue
+        person = db.get(Person, person_id)
+        if person is not None:
+            people_by_id[person.id] = person
+    for task in tasks:
+        if not task.assigned_person_id:
+            continue
+        person = db.get(Person, task.assigned_person_id)
+        if person is not None:
+            people_by_id[person.id] = person
+    return list(people_by_id.values())
+
+
+async def _send_project_change_email(
+    db: Session,
+    settings: Settings,
+    message: NormalizedMessage,
+    project: Project,
+    *,
+    subject: str,
+    changes: list[str],
+    affected_tasks: list[Task],
+    old_person_id: str | None = None,
+) -> None:
+    if not _task_change_emails_enabled(db) or not changes:
+        return
+    people = _project_related_people(db, project, affected_tasks, old_person_id=old_person_id)
+    if not people:
+        return
+    owner = db.get(Person, project.person_id)
+    text_lines = [
+        f'Project "{project.name}" was updated.',
+        "",
+        f"Owner: {owner.full_name if owner else 'Unknown'}",
+        f"Status: {project.status}",
+        "",
+        "Changes:",
+        *[f"- {change}" for change in changes],
+    ]
+    if affected_tasks:
+        text_lines.extend(["", "Affected active tasks:"])
+        for task in affected_tasks:
+            text_lines.append(f"- {_task_priority_name(task)}: {task.title}")
+    priority_list = _project_priority_list(db, project.id)
+    if priority_list:
+        text_lines.extend(["", priority_list])
+    html_changes = "".join(f"<li>{escape(change)}</li>" for change in changes)
+    html_tasks = ""
+    if affected_tasks:
+        html_tasks = (
+            "<h2 style=\"margin:22px 0 8px;font-size:17px;color:#20352b;\">Affected active tasks</h2>"
+            + "".join(
+                "<div style=\"border-top:1px solid #eee7dd;padding:10px 0;\">"
+                f"<strong>{escape(_task_priority_name(task))}</strong>: {escape(task.title)}</div>"
+                for task in affected_tasks
+            )
+        )
+    html_body = (
+        "<div style=\"font-family:Inter,Arial,sans-serif;background:#f6f2eb;padding:28px;color:#1f2a24;\">"
+        "<div style=\"max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e6ded2;"
+        "border-radius:14px;overflow:hidden;box-shadow:0 10px 30px rgba(31,42,36,.08);\">"
+        "<div style=\"background:#20352b;padding:24px 26px;color:#ffffff;\">"
+        "<p style=\"margin:0 0 8px;color:#9ad1af;font-size:12px;font-weight:800;"
+        "letter-spacing:.08em;text-transform:uppercase;\">Meet Tina</p>"
+        f"<h1 style=\"margin:0;font-size:24px;line-height:1.25;font-weight:800;\">{escape(subject)}</h1>"
+        f"<p style=\"margin:10px 0 0;color:#dbe7dd;font-size:14px;\">Project: {escape(project.name)}</p>"
+        "</div>"
+        "<div style=\"padding:24px 26px;\">"
+        f"<p style=\"margin:0 0 12px;color:#4b443d;\">Owner: {escape(owner.full_name if owner else 'Unknown')} &middot; "
+        f"Status: {escape(project.status)}</p>"
+        f"<ul style=\"margin:0;padding-left:18px;color:#4b443d;font-size:14px;line-height:1.7;\">{html_changes}</ul>"
+        f"{html_tasks}"
+        "<p style=\"margin:24px 0 0;color:#7a7168;font-size:12px;line-height:1.5;\">"
+        "This email was generated from Meet Tina project changes.</p>"
+        "</div></div></div>"
+    )
+    await send_email_tool(
+        ToolContext(db=db, actor_type="openwa", actor_id=message.sender_phone, request_id=f"project-update:{message.external_message_id}"),
+        settings,
+        to_people=people,
+        subject=subject,
+        text_body="\n".join(text_lines),
+        html_body=html_body,
+    )
+
+
 async def records_agent(state: AssistantState) -> AssistantState:
     action = _first_action(state)
     if action.action_type != "query_records":
@@ -1192,6 +1415,27 @@ async def records_agent(state: AssistantState) -> AssistantState:
         else:
             state["read_result"] = _format_tasks_by_project(db, tasks[:10])
             _remember(state.get("conversation"), task_ids=[task.id for task in tasks[:10]])
+    elif target == "projects":
+        person_ids = [person.id for person in people]
+        stmt = select(Project).where(Project.status != "cancelled").order_by(Project.name.asc()).limit(20)
+        if person_ids:
+            stmt = stmt.where(Project.person_id.in_(person_ids))
+        rows = list(db.scalars(stmt))
+        if not rows:
+            state["read_result"] = "I do not see any saved projects for that scope."
+        else:
+            lines = ["Projects I found:"]
+            for project in rows:
+                owner = db.get(Person, project.person_id)
+                task_count = db.scalar(
+                    select(func.count())
+                    .select_from(Task)
+                    .where(Task.project_id == project.id, Task.status.not_in(["completed", "cancelled"]))
+                )
+                lines.append(f"- {project.name} - {owner.full_name if owner else 'unknown'} ({task_count or 0} open tasks)")
+            state["read_result"] = "\n".join(lines)
+            state["referenced_project"] = rows[0]
+            _remember(state.get("conversation"), project=rows[0])
     elif target == "people":
         rows = people or list(db.scalars(select(Person).where(Person.active.is_(True)).order_by(Person.full_name).limit(10)))
         if not rows:
@@ -1239,7 +1483,7 @@ async def people_agent(state: AssistantState) -> AssistantState:
     actions = [
         action
         for action in state.get("actions", [])
-        if action.action_type in {"upsert_person", "create_task", "update_task", "send_email"}
+        if action.action_type in {"upsert_person", "create_task", "update_task", "update_project", "send_email"}
     ]
     if not actions:
         return state
@@ -1267,7 +1511,7 @@ async def people_agent(state: AssistantState) -> AssistantState:
             state["last_person"] = people[0]
             _remember(conversation, person=people[0])
         owner = action_people[0] if action_people else (people[0] if people else None)
-        if action.project_name and owner is not None:
+        if action.project_name and owner is not None and action.action_type in {"upsert_person", "create_task"}:
             project = _upsert_project(db, owner, action.project_name)
             state["referenced_project"] = project
             _remember(conversation, project=project)
@@ -1282,7 +1526,11 @@ async def people_agent(state: AssistantState) -> AssistantState:
 
 
 async def task_agent(state: AssistantState) -> AssistantState:
-    task_actions = [action for action in state.get("actions", []) if action.action_type in {"create_task", "update_task", "complete_task"}]
+    task_actions = [
+        action
+        for action in state.get("actions", [])
+        if action.action_type in {"create_task", "update_task", "complete_task", "delete_task", "update_project", "delete_project"}
+    ]
     if not task_actions:
         return state
     db = state["db"]
@@ -1298,7 +1546,116 @@ async def task_agent(state: AssistantState) -> AssistantState:
     )
     created_tasks: list[Task] = []
     for action in task_actions:
-        if action.action_type == "create_task" and action.title:
+        if action.action_type == "update_project":
+            project = _find_project_for_action(db, state, action)
+            if project is None:
+                state.setdefault("tool_errors", []).append("missing_project")
+                continue
+            old_name = project.name
+            old_status = project.status
+            old_description = project.description
+            old_person_id = project.person_id
+            changes: list[str] = []
+            new_name = _compact_label(action.title)
+            if new_name and new_name != project.name:
+                project.name = new_name
+                changes.append(f'Name changed from "{old_name}" to "{new_name}".')
+            if action.description is not None and action.description != project.description:
+                project.description = action.description
+                changes.append("Description updated.")
+            if action.status is not None and action.status != project.status:
+                project.status = action.status
+                changes.append(f"Status changed from {old_status} to {action.status}.")
+            if _action_has_explicit_assignee(action) and _project_owner_change_requested(message.text or ""):
+                new_owner = _person_for_action(action, state.get("referenced_people", []))
+                if new_owner is not None and new_owner.id != project.person_id:
+                    old_owner = db.get(Person, project.person_id)
+                    project.person_id = new_owner.id
+                    changes.append(
+                        f"Owner changed from {old_owner.full_name if old_owner else 'unknown'} to {new_owner.full_name}."
+                    )
+            if not changes:
+                state.setdefault("tool_errors", []).append("missing_update_fields")
+                continue
+            affected_tasks = list(
+                db.scalars(select(Task).where(Task.project_id == project.id, Task.status.not_in(["completed", "cancelled"])))
+            )
+            db.flush()
+            await _send_project_change_email(
+                db,
+                state["settings"],
+                message,
+                project,
+                subject=f"Project updated: {project.name}",
+                changes=changes,
+                affected_tasks=affected_tasks,
+                old_person_id=old_person_id if old_person_id != project.person_id else None,
+            )
+            write_audit(
+                db,
+                actor_type="openwa",
+                actor_id=message.sender_phone,
+                action="agent_update_project",
+                entity_type="project",
+                entity_id=project.id,
+                safe_metadata={
+                    "old_name": old_name,
+                    "old_status": old_status,
+                    "old_description": old_description,
+                    "changed": changes,
+                },
+            )
+            persisted.append(project.id)
+            state["referenced_project"] = project
+            _remember(conversation, project=project)
+            _append_action_summary(state, f"Updated project \"{project.name}\": {' '.join(changes)}")
+        elif action.action_type == "delete_project":
+            project = _find_project_for_action(db, state, action)
+            if project is None:
+                state.setdefault("tool_errors", []).append("missing_project")
+                continue
+            affected_tasks = list(
+                db.scalars(select(Task).where(Task.project_id == project.id, Task.status.not_in(["completed", "cancelled"])))
+            )
+            project_name = project.name
+            old_person_id = project.person_id
+            changes = ["Project deleted."]
+            if affected_tasks:
+                changes.append(f"{len(affected_tasks)} active task{'s' if len(affected_tasks) != 1 else ''} moved to No project.")
+            await _send_project_change_email(
+                db,
+                state["settings"],
+                message,
+                project,
+                subject=f"Project deleted: {project_name}",
+                changes=changes,
+                affected_tasks=affected_tasks,
+            )
+            for task in affected_tasks:
+                task.project_id = None
+                task.priority_order = 0
+            write_audit(
+                db,
+                actor_type="openwa",
+                actor_id=message.sender_phone,
+                action="agent_delete_project",
+                entity_type="project",
+                entity_id=project.id,
+                safe_metadata={"project_name": project_name, "detached_task_count": len(affected_tasks), "old_person_id": old_person_id},
+            )
+            db.delete(project)
+            persisted.append(project.id)
+            state["referenced_project"] = None
+            _append_action_summary(
+                state,
+                f"Deleted project \"{project_name}\""
+                + (
+                    f" and moved {len(affected_tasks)} active task{'s' if len(affected_tasks) != 1 else ''} to No project."
+                    if affected_tasks
+                    else "."
+                ),
+            )
+        elif action.action_type == "create_task" and action.title:
             people = state.get("referenced_people", [])
             assignee = _person_for_action(action, people)
             project = db.get(Project, action.project_id) if action.project_id else None
@@ -1435,7 +1792,9 @@ async def task_agent(state: AssistantState) -> AssistantState:
                     task,
                     old_priority=old_priority if action.priority and not task.project_id else None,
                     old_project_id=old_project_id,
-                    old_priority_order=old_priority_order if desired_priority_order is not None or old_project_id != task.project_id else None,
+                    old_priority_order=(
+                        old_priority_order if desired_priority_order is not None or old_project_id != task.project_id else None
+                    ),
                 )
                 persisted.append(task.id)
                 state["last_task"] = task
@@ -1448,6 +1807,39 @@ async def task_agent(state: AssistantState) -> AssistantState:
                 )
                 detail = "; ".join(changes) if changes else "no field changed"
                 _append_action_summary(state, f"Updated task \"{task.title}\": {detail}.")
+        elif action.action_type == "delete_task":
+            target_tasks: list[Task] = []
+            if action.related_task_id:
+                task = db.get(Task, action.related_task_id)
+                if task is not None:
+                    target_tasks.append(task)
+            elif state.get("referenced_tasks"):
+                referenced_tasks = [task for task in state["referenced_tasks"] if task is not None]
+                target_tasks = referenced_tasks if reference_mode == "plural" else referenced_tasks[:1]
+            if not target_tasks:
+                state.setdefault("tool_errors", []).append("missing_task")
+            for task in target_tasks:
+                old_project_id = task.project_id
+                task_title = task.title
+                await _send_task_deleted_email(db, state["settings"], message, task)
+                write_audit(
+                    db,
+                    actor_type="openwa",
+                    actor_id=message.sender_phone,
+                    action="agent_delete_task",
+                    entity_type="task",
+                    entity_id=task.id,
+                    safe_metadata={"title": task_title, "old_project_id": old_project_id},
+                )
+                db.delete(task)
+                db.flush()
+                _normalize_project_priority_sequence(db, old_project_id)
+                persisted.append(task.id)
+                _append_action_summary(state, f"Deleted task \"{task_title}\".")
+            if target_tasks:
+                state["referenced_tasks"] = []
+                state["last_tasks"] = []
+                state["last_task"] = None
         elif action.action_type == "complete_task":
             task = db.get(Task, action.related_task_id) if action.related_task_id else None
             if task is None and state.get("referenced_tasks"):
@@ -1589,8 +1981,10 @@ async def generate_reply(state: AssistantState) -> AssistantState:
             state["reply"] = "I found the person and task, but the email send failed on the integration side. I logged it so you can retry."
         elif "missing_task" in state["tool_errors"]:
             state["reply"] = "I can update a task, but I could not tell which task you meant."
+        elif "missing_project" in state["tool_errors"]:
+            state["reply"] = "I can update a project, but I could not tell which project you meant."
         elif "missing_update_fields" in state["tool_errors"]:
-            state["reply"] = "Which field should I update: title, assignee, project, priority, due date, description, or status?"
+            state["reply"] = "Which field should I update: title, assignee, project, priority, due date, description, owner, or status?"
         else:
             state["reply"] = "I can send it, but I need the recipient email or the task content first."
     elif action.missing_fields:

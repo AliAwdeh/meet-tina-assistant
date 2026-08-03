@@ -7,6 +7,9 @@ Intent = Literal[
     "general_conversation",
     "create_task",
     "update_task",
+    "update_project",
+    "delete_task",
+    "delete_project",
     "complete_task",
     "assign_responsibility",
     "set_person_goal",
@@ -38,7 +41,10 @@ class ExtractedAction(BaseModel):
     action_type: Literal[
         "create_task",
         "update_task",
+        "update_project",
         "complete_task",
+        "delete_task",
+        "delete_project",
         "create_reminder",
         "create_meeting",
         "assign_goal",
@@ -58,13 +64,13 @@ class ExtractedAction(BaseModel):
     related_task_id: str | None = None
     project_name: str | None = None
     project_id: str | None = None
-    query_target: Literal["summary", "people", "tasks", "emails", "meetings", "reminders"] | None = None
+    query_target: Literal["summary", "people", "projects", "tasks", "emails", "meetings", "reminders"] | None = None
     target_text: str | None = None
     due_at: datetime | None = None
     meeting_at: datetime | None = None
     priority: Literal["low", "medium", "high", "urgent"] | None = None
     priority_order: int | None = Field(default=None, ge=1)
-    status: Literal["open", "pending", "in_progress", "completed", "cancelled"] | None = None
+    status: Literal["open", "pending", "in_progress", "active", "paused", "completed", "cancelled"] | None = None
     confidence: float = Field(ge=0.0, le=1.0, default=0.0)
     missing_fields: list[str] = Field(default_factory=list)
 

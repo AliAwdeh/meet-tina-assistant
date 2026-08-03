@@ -528,6 +528,121 @@ def test_openwa_numeric_project_priority_order_update_sends_project_list(client:
         assert "High: First task (Ali Awdeh)" in email.text_body
 
 
+def test_openwa_can_delete_task_and_send_notification(client: TestClient, monkeypatch: Any) -> None:
+    with SessionLocal() as db:
+        ali = Person(full_name="Ali Awdeh", email="ali@example.com")
+        db.add(ali)
+        db.flush()
+        task = Task(title="Remove stale item", assigned_person_id=ali.id, priority="medium")
+        db.add(task)
+        db.flush()
+        db.add(
+            Conversation(
+                whatsapp_chat_id="102907500351574@lid",
+                contact_phone="102907500351574",
+                state={"last_person_id": ali.id, "last_task_id": task.id, "last_task_ids": [task.id]},
+            )
+        )
+        db.commit()
+        task_id = task.id
+
+    _mock_planner(monkeypatch, [{"action_type": "delete_task", "related_task_id": task_id, "confidence": 0.95}])
+
+    event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "delete-task",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Delete that task",
+            "type": "text",
+        },
+    }
+    response = client.post("/webhooks/openwa?token=test-openwa", json=event)
+    assert response.status_code == 200
+    assert "Deleted task" in response.json()["reply"]
+
+    with SessionLocal() as db:
+        assert db.get(Task, task_id) is None
+        email = db.scalar(select(Email).where(Email.subject == "Task deleted: Remove stale item"))
+        assert email is not None
+        assert "The task \"Remove stale item\" was deleted." in email.text_body
+
+
+def test_openwa_can_update_and_delete_project(client: TestClient, monkeypatch: Any) -> None:
+    with SessionLocal() as db:
+        ali = Person(full_name="Ali Awdeh", email="ali@example.com")
+        db.add(ali)
+        db.flush()
+        project = Project(person_id=ali.id, name="Ops")
+        db.add(project)
+        db.flush()
+        task = Task(title="Keep alive", assigned_person_id=ali.id, project_id=project.id, priority_order=1)
+        db.add(task)
+        db.flush()
+        db.add(
+            Conversation(
+                whatsapp_chat_id="102907500351574@lid",
+                contact_phone="102907500351574",
+                state={"last_person_id": ali.id, "last_project_id": project.id, "last_task_id": task.id},
+            )
+        )
+        db.commit()
+        project_id = project.id
+        task_id = task.id
+
+    _mock_planner(monkeypatch, [{"action_type": "update_project", "project_id": project_id, "title": "Ops Reset", "confidence": 0.95}])
+    update_event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "update-project",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Rename that project to Ops Reset",
+            "type": "text",
+        },
+    }
+    update_response = client.post("/webhooks/openwa?token=test-openwa", json=update_event)
+    assert update_response.status_code == 200
+    assert "Updated project" in update_response.json()["reply"]
+
+    with SessionLocal() as db:
+        project = db.get(Project, project_id)
+        assert project is not None
+        assert project.name == "Ops Reset"
+        email = db.scalar(select(Email).where(Email.subject == "Project updated: Ops Reset"))
+        assert email is not None
+        assert "Name changed from \"Ops\" to \"Ops Reset\"" in email.text_body
+
+    _mock_planner(monkeypatch, [{"action_type": "delete_project", "project_id": project_id, "confidence": 0.95}])
+    delete_event = {
+        "event": "message.received",
+        "sessionId": "session",
+        "data": {
+            "waMessageId": "delete-project",
+            "chatId": "102907500351574@lid",
+            "from": "102907500351574@lid",
+            "body": "Delete that project",
+            "type": "text",
+        },
+    }
+    delete_response = client.post("/webhooks/openwa?token=test-openwa", json=delete_event)
+    assert delete_response.status_code == 200
+    assert "Deleted project" in delete_response.json()["reply"]
+
+    with SessionLocal() as db:
+        assert db.get(Project, project_id) is None
+        task = db.get(Task, task_id)
+        assert task is not None
+        assert task.project_id is None
+        assert task.priority_order == 0
+        email = db.scalar(select(Email).where(Email.subject == "Project deleted: Ops Reset"))
+        assert email is not None
+        assert "1 active task moved to No project." in email.text_body
+
+
 def test_openwa_update_them_applies_previous_rewritten_titles(client: TestClient, monkeypatch: Any) -> None:
     with SessionLocal() as db:
         ali = Person(full_name="Ali Awdeh", email="ali@example.com")
