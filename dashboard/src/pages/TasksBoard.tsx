@@ -34,6 +34,8 @@ const sequencePriorityNames = [
   priorities[2],
   priorities[3]
 ] as const;
+const DRAG_SCROLL_EDGE = 88;
+const DRAG_SCROLL_MAX_STEP = 18;
 
 type ProjectGroup = {
   id: string;
@@ -587,17 +589,39 @@ function ProjectSection({
       if (!row) return;
       event.preventDefault();
       const startY = event.clientY;
+      const startScrollY = window.scrollY;
       const pointerId = event.pointerId;
       const handle = event.currentTarget;
+      let latestClientY = event.clientY;
+      let scrollFrame: number | null = null;
+      const setDragPosition = () => {
+        setPendingDrag({ taskId: task.id, dy: latestClientY - startY + window.scrollY - startScrollY });
+      };
+      const scrollTick = () => {
+        const viewport = window.innerHeight;
+        let step = 0;
+        if (latestClientY < DRAG_SCROLL_EDGE) {
+          step = -Math.ceil(((DRAG_SCROLL_EDGE - latestClientY) / DRAG_SCROLL_EDGE) * DRAG_SCROLL_MAX_STEP);
+        } else if (latestClientY > viewport - DRAG_SCROLL_EDGE) {
+          step = Math.ceil(((latestClientY - (viewport - DRAG_SCROLL_EDGE)) / DRAG_SCROLL_EDGE) * DRAG_SCROLL_MAX_STEP);
+        }
+        if (step !== 0) {
+          window.scrollBy(0, step);
+          setDragPosition();
+        }
+        scrollFrame = requestAnimationFrame(scrollTick);
+      };
       try {
         handle.setPointerCapture(pointerId);
       } catch {
         // Window listeners below keep the drag alive even if capture is unavailable.
       }
       document.body.classList.add("app-dragging");
-      setPendingDrag({ taskId: task.id, dy: 0 });
+      setDragPosition();
+      scrollFrame = requestAnimationFrame(scrollTick);
 
       const finish = (commit: boolean, clientX: number, clientY: number) => {
+        if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onCancel);
@@ -620,7 +644,8 @@ function ProjectSection({
       const onMove = (moveEvent: PointerEvent) => {
         if (moveEvent.pointerId !== pointerId) return;
         moveEvent.preventDefault();
-        setPendingDrag({ taskId: task.id, dy: moveEvent.clientY - startY });
+        latestClientY = moveEvent.clientY;
+        setDragPosition();
       };
       const onUp = (upEvent: PointerEvent) => {
         if (upEvent.pointerId !== pointerId) return;
