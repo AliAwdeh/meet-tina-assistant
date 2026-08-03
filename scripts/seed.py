@@ -1,7 +1,4 @@
 import argparse
-from datetime import UTC, datetime, timedelta
-
-from sqlalchemy import delete, update
 
 from app.auth.passwords import hash_password
 from app.core.database import Base, SessionLocal, engine
@@ -26,6 +23,7 @@ from app.models.entities import (
     Task,
     User,
 )
+from sqlalchemy import delete, update
 
 NOTIFICATION_SETTINGS_KEY = "notification_settings"
 
@@ -82,102 +80,29 @@ def _clear_operational_data() -> None:
 
 
 def _add_demo_data() -> None:
-    now = datetime.now(UTC)
+    team = [
+        ("Ali Awdeh", "Ali.Awdeh@maids.cc", ["TA Bot", "PRO Bot", "Collect Info Bot", "Chatbots CX"]),
+        ("Mohamad Darwish", "mohammad.darwish@maids.cc", ["Gulf Maids"]),
+        ("Georgio Elias", "georgio@maids.cc", ["MMR"]),
+        ("Jad Baraket", "jadbarakat@maids.cc", []),
+        ("Karim el moghraby", "mugy@maids.cc", ["Government Affairs"]),
+        ("Karla ElBanna", "karla@maids.cc", ["Risk"]),
+        ("Marilyn Gharios", "marilyn.gharios@maids.cc", ["MV Maids Retention"]),
+        ("Mohannad Akoum", "mohannad.akoum@maids.cc", ["MV CX"]),
+        ("Peter mansour", "peter.mansour@maids.cc", ["PRO SERVICES", "Travel Assist"]),
+        ("Razane Arnaout", "razane.arnaout@maids.cc", ["MV Resolvers"]),
+        ("Tebarek Abdulkader", "tebarek.abdulkadir@maids.cc", []),
+        ("Yousif Abu Taam", "yousif.abutaam@maids.cc", ["Maids.at", "Bookers"]),
+    ]
     with SessionLocal() as db:
-        people = {
-            "ali": Person(full_name="Ali Awdeh", company="Meet Tina", job_title="Operations Lead", email="ali.awdeh+aliawdeh@maids.cc", active=True),
-            "naji": Person(full_name="Naji Haddad", company="Meet Tina", job_title="Automation Owner", email="ali.awdeh+najihaddad@maids.cc", active=True),
-            "youssef": Person(
-                full_name="Youssef Darwish",
-                company="Meet Tina",
-                job_title="Growth Manager",
-                email="ali.awdeh+youssefdarwish@maids.cc",
-                active=True,
-            ),
-            "lina": Person(full_name="Lina Karam", company="Meet Tina", job_title="Client Success", email="ali.awdeh+linakaram@maids.cc", active=True),
-        }
-        db.add_all(people.values())
-        db.flush()
-
-        projects = {
-            "gulfmates": Project(person_id=people["ali"].id, name="Gulfmates", description="Partner follow-up and launch tracking", status="active"),
-            "travel": Project(person_id=people["ali"].id, name="Travel Assist", description="Travel support workflow", status="active"),
-            "openwa": Project(person_id=people["naji"].id, name="OpenWA Reliability", description="WhatsApp automation checks", status="active"),
-            "launch": Project(person_id=people["youssef"].id, name="Launch Ops", description="Launch execution list", status="active"),
-            "portal": Project(person_id=people["lina"].id, name="Client Portal", description="Portal rollout tasks", status="active"),
-        }
-        db.add_all(projects.values())
-        db.flush()
-
-        db.add_all(
-            [
-                Task(
-                    title="Confirm Gulfmates onboarding owner",
-                    assigned_person_id=people["ali"].id,
-                    project_id=projects["gulfmates"].id,
-                    priority="urgent",
-                    priority_order=1,
-                    due_date=now + timedelta(days=1),
-                ),
-                Task(
-                    title="Send Gulfmates contract summary",
-                    assigned_person_id=people["ali"].id,
-                    project_id=projects["gulfmates"].id,
-                    priority="high",
-                    priority_order=2,
-                    due_date=now + timedelta(days=2),
-                ),
-                Task(
-                    title="Draft Travel Assist user journey",
-                    assigned_person_id=people["ali"].id,
-                    project_id=projects["travel"].id,
-                    priority="medium",
-                    priority_order=1,
-                    due_date=now + timedelta(days=4),
-                ),
-                Task(
-                    title="Check OpenWA webhook replay handling",
-                    assigned_person_id=people["naji"].id,
-                    project_id=projects["openwa"].id,
-                    priority="urgent",
-                    priority_order=1,
-                    due_date=now + timedelta(days=1),
-                ),
-                Task(
-                    title="Document voice-note media flow",
-                    assigned_person_id=people["naji"].id,
-                    project_id=projects["openwa"].id,
-                    priority="medium",
-                    priority_order=2,
-                    due_date=now + timedelta(days=3),
-                ),
-                Task(
-                    title="Prepare launch checklist",
-                    assigned_person_id=people["youssef"].id,
-                    project_id=projects["launch"].id,
-                    priority="high",
-                    priority_order=1,
-                    due_date=now + timedelta(days=2),
-                ),
-                Task(
-                    title="Review portal onboarding copy",
-                    assigned_person_id=people["lina"].id,
-                    project_id=projects["portal"].id,
-                    priority="medium",
-                    priority_order=1,
-                    due_date=now + timedelta(days=5),
-                ),
-                Task(
-                    title="Call Sami with weekly risk summary",
-                    assigned_person_id=people["lina"].id,
-                    priority="low",
-                    priority_order=0,
-                    due_date=now + timedelta(days=6),
-                ),
-            ]
-        )
+        for full_name, email, project_names in team:
+            person = Person(full_name=full_name, company="Maids.cc", email=email, active=True)
+            db.add(person)
+            db.flush()
+            for project_name in project_names:
+                db.add(Project(person_id=person.id, name=project_name, status="active"))
         db.commit()
-    print("Created demo people, projects, and numbered task priorities.")
+    print("Created Maids.cc people and projects with no tasks.")
 
 
 def main() -> None:

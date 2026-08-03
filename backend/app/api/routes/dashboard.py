@@ -380,7 +380,80 @@ def _project_priority_items(db: Session, project_id: str) -> list[dict[str, str]
     return items
 
 
-def _render_task_digest(db: Session, recipient: Person, entries: list[dict[str, Any]]) -> tuple[str, str]:
+def _unique_labels(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    labels: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        key = normalized.lower()
+        if normalized and key not in seen:
+            seen.add(key)
+            labels.append(normalized)
+    return labels
+
+
+def _clip_subject(value: str, limit: int = 140) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3].rstrip() + "..."
+
+
+def _task_digest_subject(recipient: Person, entries: list[dict[str, Any]]) -> str:
+    changed_entries = [(entry, _change_lines(entry)) for entry in entries]
+    changed_entries = [(entry, lines) for entry, lines in changed_entries if lines]
+    if not changed_entries:
+        return f"Task updates for {recipient.full_name}"
+    if len(changed_entries) == 1:
+        entry, lines = changed_entries[0]
+        after = entry.get("after") or {}
+        title = str(after.get("title") or "task")
+        if entry.get("action") == "created":
+            return _clip_subject(f"Task created: {title}")
+        changed_labels: list[str] = []
+        if any(line.startswith("Priority changed") for line in lines):
+            changed_labels.append("priority")
+        if any(line.startswith("Project changed") for line in lines):
+            changed_labels.append("project")
+        if any(line.startswith("Assignee changed") for line in lines):
+            changed_labels.append("assignee")
+        if any(line.startswith("Status changed") for line in lines):
+            changed_labels.append("status")
+        if any(line.startswith("Title changed") for line in lines):
+            changed_labels.append("title")
+        if len(changed_labels) > 1:
+            label_text = ", ".join(changed_labels[:-1]) + f" and {changed_labels[-1]}"
+            return _clip_subject(f"Task {label_text} changed: {title}")
+        if changed_labels == ["priority"]:
+            return _clip_subject(f"Task priority changed: {title}")
+        if changed_labels == ["project"]:
+            return _clip_subject(f"Task moved: {title}")
+        if changed_labels == ["assignee"]:
+            return _clip_subject(f"Task reassigned: {title}")
+        if changed_labels == ["status"]:
+            return _clip_subject(f"Task status changed: {title}")
+        if changed_labels == ["title"]:
+            return _clip_subject(f"Task renamed: {title}")
+        return _clip_subject(f"Task updated: {title}")
+    created_count = sum(1 for entry, _lines in changed_entries if entry.get("action") == "created")
+    updated_count = len(changed_entries) - created_count
+    project_names = _unique_labels(
+        [str((entry.get("after") or {}).get("project_name") or "No project") for entry, _lines in changed_entries]
+    )
+    summary_parts: list[str] = []
+    if created_count:
+        summary_parts.append(f"{created_count} created")
+    if updated_count:
+        summary_parts.append(f"{updated_count} updated")
+    if len(project_names) == 1:
+        scope = f"for {project_names[0]}"
+    elif len(project_names) > 1:
+        scope = f"across {len(project_names)} projects"
+    else:
+        scope = f"for {recipient.full_name}"
+    return _clip_subject(f"Task updates: {', '.join(summary_parts)} {scope}")
+
+
+def _render_task_digest(db: Session, recipient: Person, entries: list[dict[str, Any]], subject: str) -> tuple[str, str]:
     changed_entries = [(entry, _change_lines(entry)) for entry in entries]
     changed_entries = [(entry, lines) for entry, lines in changed_entries if lines]
     project_ids = sorted(
@@ -391,16 +464,32 @@ def _render_task_digest(db: Session, recipient: Person, entries: list[dict[str, 
             if project_id
         }
     )
-    text_lines = [f"Hi {recipient.full_name},", "", "Here are the latest task updates:", ""]
+    update_count = len(changed_entries)
+    project_count = len(project_ids)
+    text_lines = [f"Hi {recipient.full_name},", "", subject, "", "Here are the latest task updates:", ""]
     html_parts = [
-        "<div style=\"font-family:Inter,Arial,sans-serif;background:#f7f4ee;padding:24px;color:#1f2a24;\">",
-        "<div style=\"max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e7e0d7;border-radius:10px;overflow:hidden;\">",
-        "<div style=\"border-left:6px solid #88c7a2;padding:22px 24px;\">",
-        "<p style=\"margin:0 0 6px;color:#4d8f69;font-size:13px;font-weight:700;letter-spacing:.02em;\">Meet Tina</p>",
-        f"<h1 style=\"margin:0;font-size:22px;line-height:1.25;\">Task update digest</h1>",
-        f"<p style=\"margin:8px 0 0;color:#6b6258;font-size:14px;\">Hi {escape(recipient.full_name)}, here are the latest task updates.</p>",
+        "<div style=\"display:none;max-height:0;overflow:hidden;color:transparent;opacity:0;\">"
+        f"{escape(subject)}"
         "</div>",
-        "<div style=\"padding:0 24px 22px;\">",
+        "<div style=\"font-family:Inter,Arial,sans-serif;background:#f6f2eb;padding:28px;color:#1f2a24;\">",
+        "<div style=\"max-width:760px;margin:0 auto;background:#ffffff;border:1px solid #e6ded2;"
+        "border-radius:14px;overflow:hidden;box-shadow:0 10px 30px rgba(31,42,36,.08);\">",
+        "<div style=\"background:#20352b;padding:24px 26px;color:#ffffff;\">",
+        "<p style=\"margin:0 0 8px;color:#9ad1af;font-size:12px;font-weight:800;"
+        "letter-spacing:.08em;text-transform:uppercase;\">Meet Tina</p>",
+        f"<h1 style=\"margin:0;font-size:24px;line-height:1.25;font-weight:800;\">{escape(subject)}</h1>",
+        f"<p style=\"margin:10px 0 0;color:#dbe7dd;font-size:14px;line-height:1.55;\">"
+        f"Hi {escape(recipient.full_name)}, here is the clean summary of what changed.</p>",
+        "<div style=\"margin-top:18px;display:flex;gap:10px;flex-wrap:wrap;\">",
+        f"<span style=\"display:inline-block;background:#ffffff;color:#20352b;border-radius:999px;"
+        f"padding:7px 12px;font-size:13px;font-weight:800;\">{update_count} task update"
+        f"{'s' if update_count != 1 else ''}</span>",
+        f"<span style=\"display:inline-block;background:#9ad1af;color:#20352b;border-radius:999px;"
+        f"padding:7px 12px;font-size:13px;font-weight:800;\">{project_count} priority list"
+        f"{'s' if project_count != 1 else ''}</span>",
+        "</div>",
+        "</div>",
+        "<div style=\"padding:6px 26px 26px;\">",
     ]
     by_project: dict[str, list[tuple[dict[str, Any], list[str]]]] = {}
     for entry, lines in changed_entries:
@@ -409,17 +498,18 @@ def _render_task_digest(db: Session, recipient: Person, entries: list[dict[str, 
     for project_name, project_entries in by_project.items():
         text_lines.append(f"{project_name}")
         html_parts.append(
-            f"<section style=\"margin-top:18px;border:1px solid #ebe5dc;border-radius:8px;overflow:hidden;\">"
-            f"<div style=\"background:#f8f6f1;padding:10px 14px;font-weight:700;\">{escape(project_name)}</div>"
-            f"<div style=\"padding:12px 14px;\">"
+            f"<section style=\"margin-top:20px;border:1px solid #e8dfd2;border-radius:12px;overflow:hidden;background:#fffdf9;\">"
+            f"<div style=\"background:#f3eadf;padding:12px 16px;font-weight:800;color:#20352b;\">{escape(project_name)}</div>"
+            f"<div style=\"padding:14px 16px;\">"
         )
         for entry, lines in project_entries:
             after = entry.get("after") or {}
             text_lines.append(f"- {after.get('title')}")
+            task_title = escape(str(after.get("title") or "Untitled task"))
             html_parts.append(
-                f"<div style=\"border-bottom:1px solid #f0ece6;padding:10px 0;\">"
-                f"<div style=\"font-weight:700;margin-bottom:6px;\">{escape(str(after.get('title') or 'Untitled task'))}</div>"
-                f"<ul style=\"margin:0;padding-left:18px;color:#4b443d;font-size:14px;line-height:1.6;\">"
+                f"<div style=\"border-bottom:1px solid #eee7dd;padding:12px 0;\">"
+                f"<div style=\"font-weight:800;margin-bottom:8px;color:#1f2a24;\">{task_title}</div>"
+                f"<ul style=\"margin:0;padding-left:18px;color:#4b443d;font-size:14px;line-height:1.7;\">"
             )
             for line in lines:
                 text_lines.append(f"  - {line}")
@@ -431,25 +521,34 @@ def _render_task_digest(db: Session, recipient: Person, entries: list[dict[str, 
     project_priority_groups = [(project_id, items) for project_id, items in project_priority_groups if items]
     if project_priority_groups:
         text_lines.append("Current project priority lists:")
-        html_parts.append("<h2 style=\"margin:24px 0 10px;font-size:17px;\">Current project priority lists</h2>")
+        html_parts.append("<h2 style=\"margin:28px 0 10px;font-size:18px;color:#20352b;\">Current project priority lists</h2>")
         for _project_id, items in project_priority_groups:
             project_name = items[0]["project"]
             text_lines.append(project_name)
             html_parts.append(
-                f"<section style=\"margin-top:12px;border:1px solid #d8e9dd;border-radius:8px;background:#fbfdfb;padding:14px;\">"
-                f"<div style=\"font-weight:700;margin-bottom:10px;color:#2f6b46;\">{escape(project_name)}</div>"
+                f"<section style=\"margin-top:12px;border:1px solid #d6e8dc;border-radius:12px;background:#fbfdfb;padding:16px;\">"
+                f"<div style=\"font-weight:800;margin-bottom:12px;color:#2f6b46;\">{escape(project_name)}</div>"
             )
             for item in items:
                 text_lines.append(f"- {item['priority']}: {item['title']} ({item['assignee']})")
                 html_parts.append(
-                    f"<div style=\"display:flex;gap:10px;padding:7px 0;border-top:1px solid #edf4ee;\">"
-                    f"<span style=\"min-width:72px;font-weight:700;color:#1f2a24;\">{escape(item['priority'])}</span>"
-                    f"<span>{escape(item['title'])} <span style=\"color:#7a7168;\">({escape(item['assignee'])})</span></span>"
+                    f"<div style=\"padding:9px 0;border-top:1px solid #edf4ee;\">"
+                    f"<span style=\"display:inline-block;min-width:72px;font-weight:800;color:#20352b;\">{escape(item['priority'])}</span>"
+                    f"<span style=\"color:#1f2a24;\">{escape(item['title'])}</span>"
+                    f"<span style=\"color:#7a7168;\"> ({escape(item['assignee'])})</span>"
                     f"</div>"
                 )
             html_parts.append("</section>")
             text_lines.append("")
-    html_parts.extend(["</div>", "</div>", "</div>"])
+    html_parts.extend(
+        [
+            "<p style=\"margin:24px 0 0;color:#7a7168;font-size:12px;line-height:1.5;\">"
+            "This email was generated from the latest saved task changes in Meet Tina.</p>",
+            "</div>",
+            "</div>",
+            "</div>",
+        ]
+    )
     return "\n".join(text_lines).strip(), "".join(html_parts)
 
 
@@ -488,7 +587,8 @@ async def flush_task_notifications(
     sent = 0
     for person_id, person_entries in entries_by_recipient.items():
         person = people_by_id[person_id]
-        text_body, html_body = _render_task_digest(db, person, person_entries)
+        subject = _task_digest_subject(person, person_entries)
+        text_body, html_body = _render_task_digest(db, person, person_entries, subject)
         await send_email_tool(
             ToolContext(
                 db=db,
@@ -498,7 +598,7 @@ async def flush_task_notifications(
             ),
             settings,
             to_people=[person],
-            subject="Task updates digest",
+            subject=subject,
             text_body=text_body,
             html_body=html_body,
         )
@@ -622,7 +722,10 @@ async def _send_task_change_email(
     if old_title is not None and old_title != task.title:
         changes.append(f"Title changed from {old_title} to {task.title}.")
     if old_priority_order is not None and old_priority_order != task.priority_order:
-        changes.append(f"Priority changed from {_project_priority_name(old_priority_order)} to {_project_priority_name(task.priority_order)}.")
+        changes.append(
+            f"Priority changed from {_project_priority_name(old_priority_order)} "
+            f"to {_project_priority_name(task.priority_order)}."
+        )
     elif old_priority is not None and old_priority != task.priority:
         changes.append(f"Priority changed from {old_priority.title()} to {task.priority.title()}.")
     if old_project_id != task.project_id:
@@ -719,15 +822,14 @@ async def update_task(
         raise HTTPException(status_code=404, detail="Person not found")
     if "project_id" in payload.model_fields_set and payload.project_id and db.get(Project, payload.project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    old_title = task.title
-    old_priority = task.priority
     old_project_id = task.project_id
     old_assigned_person_id = task.assigned_person_id
-    old_status = task.status
-    old_due_date = task.due_date
-    old_priority_order = task.priority_order
     before = _task_snapshot(db, task)
-    project_priority_order = _project_priority_order(payload.priority) if payload.priority and (payload.project_id or task.project_id) else None
+    project_priority_order = (
+        _project_priority_order(payload.priority)
+        if payload.priority and (payload.project_id or task.project_id)
+        else None
+    )
     for field in payload.model_fields_set:
         if field == "priority_order" and getattr(payload, field) is None:
             continue
@@ -817,7 +919,6 @@ async def complete_task(
     settings: Settings = Depends(get_settings),
 ) -> TaskRead:
     existing = db.get(Task, task_id)
-    old_status = existing.status if existing is not None else None
     old_project_id = existing.project_id if existing is not None else None
     before = _task_snapshot(db, existing) if existing is not None else None
     task = records.complete_task(db, task_id)

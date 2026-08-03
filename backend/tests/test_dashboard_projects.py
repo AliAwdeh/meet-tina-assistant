@@ -75,8 +75,9 @@ def test_dashboard_projects_and_priority_change_email(client: TestClient) -> Non
     assert _flush_notifications(client)["sent"] == 1
 
     with SessionLocal() as db:
-        email = db.scalar(select(Email).where(Email.subject == "Task updates digest").order_by(Email.created_at.desc()))
+        email = db.scalar(select(Email).order_by(Email.created_at.desc()))
         assert email is not None
+        assert email.subject == "Task priority changed: Review vendor shortlist"
         assert email.status == "queued"
         assert "Review vendor shortlist" in email.text_body
         assert "Priority changed from Unranked to Urgent" in email.text_body
@@ -129,8 +130,9 @@ def test_dashboard_project_priority_order_email_includes_full_project_list(clien
             ("First item", 2),
             ("Second item", 3),
         ]
-        email = db.scalar(select(Email).where(Email.subject == "Task updates digest").order_by(Email.created_at.desc()))
+        email = db.scalar(select(Email).order_by(Email.created_at.desc()))
         assert email is not None
+        assert email.subject == "Task priority changed: Third item"
         assert "Priority changed from Medium to Urgent" in email.text_body
         assert "Current project priority lists:" in email.text_body
         assert "Urgent: Third item (Priority Owner)" in email.text_body
@@ -158,21 +160,22 @@ def test_dashboard_task_creation_email_includes_project_priority_list(client: Te
     assert pending_response.json()["pending"] == 1
 
     with SessionLocal() as db:
-        email = db.scalar(select(Email).where(Email.subject == "Task updates digest"))
+        email = db.scalar(select(Email))
         assert email is None
 
     assert _flush_notifications(client)["sent"] == 1
 
     with SessionLocal() as db:
-        email = db.scalar(select(Email).where(Email.subject == "Task updates digest"))
+        email = db.scalar(select(Email))
         assert email is not None
+        assert email.subject == "Task created: Creation email task"
         assert email.status == "queued"
         assert "Created task." in email.text_body
         assert "Creation email task" in email.text_body
         assert "Project: Creation Project" in email.text_body
         assert "Priority: Unranked" in email.text_body
         assert "Current project priority lists:" not in email.text_body
-        assert "Task update digest" in email.html_body
+        assert "Task created: Creation email task" in email.html_body
         recipient = db.scalar(select(EmailRecipient).where(EmailRecipient.email_id == email.id))
         assert recipient is not None
         assert recipient.email_address == "create-notify@example.com"
@@ -229,8 +232,9 @@ def test_dashboard_updates_people_projects_and_moves_tasks(client: TestClient) -
         assert stored_task.project_id == second_project.json()["id"]
         project = db.scalar(select(Project).where(Project.name == "Launch Plan"))
         assert project is not None
-        email = db.scalar(select(Email).where(Email.subject == "Task updates digest").order_by(Email.created_at.desc()))
+        email = db.scalar(select(Email).order_by(Email.created_at.desc()))
         assert email is not None
+        assert email.subject == "Task priority, project and status changed: Send stakeholder summary"
         assert "Project changed from Launch Plan to Retention" in email.text_body
 
 
@@ -259,7 +263,7 @@ def test_dashboard_notification_settings_disable_task_change_email(client: TestC
     assert _flush_notifications(client)["sent"] == 0
 
     with SessionLocal() as db:
-        email = db.scalar(select(Email).where(Email.subject == "Task updates digest"))
+        email = db.scalar(select(Email))
         assert email is None
 
 
@@ -283,8 +287,9 @@ def test_dashboard_task_title_and_completion_email_notifications(client: TestCli
     assert _flush_notifications(client)["sent"] == 1
 
     with SessionLocal() as db:
-        update_email = db.scalar(select(Email).where(Email.subject == "Task updates digest").order_by(Email.created_at.desc()))
+        update_email = db.scalar(select(Email).order_by(Email.created_at.desc()))
         assert update_email is not None
+        assert update_email.subject == "Task status and title changed: New dashboard task title"
         assert "Title changed from Old dashboard task title to New dashboard task title" in update_email.text_body
         assert "Status changed from open to completed" in update_email.text_body
 
@@ -308,8 +313,9 @@ def test_dashboard_task_notification_digest_removes_redundant_priority_changes(c
     assert _flush_notifications(client)["sent"] == 1
 
     with SessionLocal() as db:
-        email = db.scalar(select(Email).where(Email.subject == "Task updates digest").order_by(Email.created_at.desc()))
+        email = db.scalar(select(Email).order_by(Email.created_at.desc()))
         assert email is not None
+        assert email.subject == "Task priority changed: Priority swings"
         assert "Priority changed from Low to Urgent" in email.text_body
         assert "Priority changed from High" not in email.text_body
         assert "Priority changed from Medium" not in email.text_body
