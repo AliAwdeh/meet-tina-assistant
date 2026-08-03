@@ -170,7 +170,13 @@ def _ordered_project_tasks(db: Session, project_id: str) -> list[Task]:
             .order_by(Task.created_at.asc())
         )
     )
-    return sorted(tasks, key=lambda task: (task.priority_order if task.priority_order > 0 else 1_000_000, task.created_at))
+    return sorted(
+        tasks,
+        key=lambda task: (
+            task.priority_order if task.priority_order > 0 else 1_000_000,
+            task.created_at.timestamp() if task.created_at else 0,
+        ),
+    )
 
 
 def _project_priority_name(priority_order: int | None) -> str:
@@ -198,8 +204,8 @@ def _normalize_project_priority_sequence(
 ) -> None:
     if not project_id:
         return
-    tasks = _ordered_project_tasks(db, project_id)
-    if focused_task is not None and focused_task in tasks and desired_order is not None:
+    tasks = [task for task in _ordered_project_tasks(db, project_id) if task.priority_order > 0]
+    if focused_task is not None and desired_order is not None:
         tasks = [task for task in tasks if task.id != focused_task.id]
         index = max(0, min(desired_order - 1, len(tasks)))
         tasks.insert(index, focused_task)
@@ -214,7 +220,7 @@ def _project_priority_list(db: Session, project_id: str | None) -> str:
     project = db.get(Project, project_id)
     if project is None:
         return ""
-    tasks = _ordered_project_tasks(db, project_id)
+    tasks = [task for task in _ordered_project_tasks(db, project_id) if task.priority_order > 0]
     if not tasks:
         return ""
     lines = [f"Current priority list for {project.name}:"]
@@ -361,7 +367,7 @@ def _project_priority_items(db: Session, project_id: str) -> list[dict[str, str]
     if project is None:
         return []
     items: list[dict[str, str]] = []
-    for task in _ordered_project_tasks(db, project_id):
+    for task in [task for task in _ordered_project_tasks(db, project_id) if task.priority_order > 0]:
         assignee = db.get(Person, task.assigned_person_id) if task.assigned_person_id else None
         items.append(
             {
@@ -421,13 +427,12 @@ def _render_task_digest(db: Session, recipient: Person, entries: list[dict[str, 
             html_parts.append("</ul></div>")
         html_parts.append("</div></section>")
         text_lines.append("")
-    if project_ids:
+    project_priority_groups = [(project_id, _project_priority_items(db, project_id)) for project_id in project_ids]
+    project_priority_groups = [(project_id, items) for project_id, items in project_priority_groups if items]
+    if project_priority_groups:
         text_lines.append("Current project priority lists:")
         html_parts.append("<h2 style=\"margin:24px 0 10px;font-size:17px;\">Current project priority lists</h2>")
-        for project_id in project_ids:
-            items = _project_priority_items(db, project_id)
-            if not items:
-                continue
+        for _project_id, items in project_priority_groups:
             project_name = items[0]["project"]
             text_lines.append(project_name)
             html_parts.append(
@@ -564,7 +569,7 @@ async def create_task(
     if payload.project_id and db.get(Project, payload.project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
     task = records.create_task(db, payload, created_by=user.id)
-    desired_order = payload.priority_order or (1 if payload.project_id else None)
+    desired_order = payload.priority_order
     _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=desired_order)
     write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="create_task", entity_type="task", entity_id=task.id)
     _queue_task_notification(db, user, task, action="created")
@@ -732,7 +737,7 @@ async def update_task(
     requested_priority_order = payload.priority_order if "priority_order" in payload.model_fields_set else project_priority_order
     if old_project_id and old_project_id != task.project_id:
         _normalize_project_priority_sequence(db, old_project_id)
-    if task.project_id and (old_project_id != task.project_id or requested_priority_order is not None or task.priority_order <= 0):
+    if task.project_id and (old_project_id != task.project_id or requested_priority_order is not None):
         _normalize_project_priority_sequence(db, task.project_id, focused_task=task, desired_order=requested_priority_order)
     if payload.status == "completed" and task.completed_at is None:
         task.completed_at = datetime.now(UTC)

@@ -14,7 +14,7 @@ import {
   UserRound,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiPost, apiPostKeepalive, apiPut, errorMessage, shouldRetry } from "../api/client";
 import { Button, LoadingPanel, Notice, Sheet, secondaryButtonClass } from "../components/ui";
 import { useDragSort } from "../components/useDragSort";
@@ -77,6 +77,16 @@ function projectPriority(order: number) {
 function taskPriority(task: Task, order: number, isProjectTask: boolean) {
   if (isProjectTask) return projectPriority(order);
   return priorities.find((item) => item.id === task.priority) ?? priorities[2];
+}
+
+function orderedProjectTasks(tasks: Task[]) {
+  return tasks.filter((task) => (task.priority_order ?? 0) > 0);
+}
+
+function unprioritizedProjectTasks(tasks: Task[]) {
+  return tasks
+    .filter((task) => (task.priority_order ?? 0) <= 0)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
 export function TasksBoard() {
@@ -209,6 +219,8 @@ export function TasksBoard() {
               .map((project) => ({
                 ...project,
                 tasks: project.tasks.filter((task) => {
+                  const projectPriorityLabel =
+                    task.project_id && task.priority_order ? projectPriority(task.priority_order).label : task.project_id ? "unprioritized" : undefined;
                   const haystack = [
                     person.full_name,
                     project.name,
@@ -216,7 +228,7 @@ export function TasksBoard() {
                     task.description,
                     task.status,
                     task.priority,
-                    task.project_id ? projectPriority(task.priority_order || 1).label : undefined
+                    projectPriorityLabel
                   ]
                     .filter(Boolean)
                     .join(" ")
@@ -513,12 +525,20 @@ function ProjectSection({
   onEditTask: (task: Task) => void;
 }) {
   const isRealProject = project.id !== "none";
+  const rankedProjectTasks = isRealProject ? orderedProjectTasks(project.tasks) : project.tasks;
+  const unrankedProjectTasks = isRealProject ? unprioritizedProjectTasks(project.tasks) : [];
   // Local optimistic order so drag feels instant; resync when server data changes.
-  const [order, setOrder] = useState<Task[]>(project.tasks);
+  const [order, setOrder] = useState<Task[]>(rankedProjectTasks);
+  const [locallyRankedIds, setLocallyRankedIds] = useState<Set<string>>(() => new Set());
+  const [pendingDrag, setPendingDrag] = useState<{ taskId: string; dy: number } | null>(null);
+  const pendingRowRefs = useRef<Record<string, HTMLElement | null>>({});
   useEffect(() => {
-    setOrder(project.tasks);
+    setOrder(rankedProjectTasks);
+    setLocallyRankedIds(new Set());
+    setPendingDrag(null);
   }, [project.tasks]);
 
+  const floatingTasks = unrankedProjectTasks.filter((task) => !locallyRankedIds.has(task.id));
   const canReorder = isRealProject && order.length > 1;
   const sort = useDragSort({
     itemCount: order.length,
@@ -533,6 +553,90 @@ function ProjectSection({
   });
 
   const topPriority = order.length > 0 && isRealProject ? projectPriority(1) : null;
+  const taskCount = order.length + floatingTasks.length;
+
+  const dropIndexFromPointer = (clientY: number) => {
+    let index = 0;
+    const rows = order.map((_task, rowIndex) => sort.containerRef.current?.children.item(rowIndex) as HTMLElement | null);
+    for (const row of rows) {
+      if (!row) continue;
+      const rect = row.getBoundingClientRect();
+      if (clientY > rect.top + rect.height / 2) index += 1;
+    }
+    return index;
+  };
+
+  const isInsidePriorityList = (clientX: number, clientY: number) => {
+    const target = sort.containerRef.current;
+    if (!target) return false;
+    const rect = target.getBoundingClientRect();
+    const verticalPadding = order.length === 0 ? 64 : 24;
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top - verticalPadding &&
+      clientY <= rect.bottom + verticalPadding
+    );
+  };
+
+  const pendingHandleProps = (task: Task): DragHandleProps => ({
+    onPointerDown: (event) => {
+      if (!isRealProject || isMoving) return;
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      const row = pendingRowRefs.current[task.id];
+      if (!row) return;
+      event.preventDefault();
+      const startY = event.clientY;
+      const pointerId = event.pointerId;
+      const handle = event.currentTarget;
+      try {
+        handle.setPointerCapture(pointerId);
+      } catch {
+        // Window listeners below keep the drag alive even if capture is unavailable.
+      }
+      document.body.classList.add("app-dragging");
+      setPendingDrag({ taskId: task.id, dy: 0 });
+
+      const finish = (commit: boolean, clientX: number, clientY: number) => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onCancel);
+        try {
+          handle.releasePointerCapture(pointerId);
+        } catch {
+          // Already released.
+        }
+        document.body.classList.remove("app-dragging");
+        setPendingDrag(null);
+        if (!commit || !isInsidePriorityList(clientX, clientY)) return;
+        const toIndex = dropIndexFromPointer(clientY);
+        const next = [...order];
+        next.splice(toIndex, 0, task);
+        setOrder(next);
+        setLocallyRankedIds((current) => new Set(current).add(task.id));
+        onReorder(task.id, toIndex + 1);
+      };
+
+      const onMove = (moveEvent: PointerEvent) => {
+        if (moveEvent.pointerId !== pointerId) return;
+        moveEvent.preventDefault();
+        setPendingDrag({ taskId: task.id, dy: moveEvent.clientY - startY });
+      };
+      const onUp = (upEvent: PointerEvent) => {
+        if (upEvent.pointerId !== pointerId) return;
+        finish(true, upEvent.clientX, upEvent.clientY);
+      };
+      const onCancel = (cancelEvent: PointerEvent) => {
+        if (cancelEvent.pointerId !== pointerId) return;
+        finish(false, cancelEvent.clientX, cancelEvent.clientY);
+      };
+
+      window.addEventListener("pointermove", onMove, { passive: false });
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onCancel);
+      navigator.vibrate?.(8);
+    }
+  });
 
   return (
     <div className="overflow-hidden rounded-lg border border-stone-200/70 bg-white">
@@ -552,7 +656,7 @@ function ProjectSection({
               )}
             </span>
             <span className="mt-0.5 block truncate text-xs text-stone-400">
-              {order.length} {order.length === 1 ? "task" : "tasks"}
+              {taskCount} {taskCount === 1 ? "task" : "tasks"}
               {isRealProject ? ` · ${project.status}` : ""}
             </span>
           </span>
@@ -569,36 +673,73 @@ function ProjectSection({
       </div>
       {isOpen && (
         <div className="border-t border-stone-100 bg-stone-50/50 p-2 sm:p-2.5">
-          {order.length === 0 ? (
+          {taskCount === 0 ? (
             <div className="rounded-md border border-dashed border-stone-300 bg-white px-4 py-6 text-center text-sm text-stone-400">
               No tasks here yet.
             </div>
           ) : (
-            <>
-              {canReorder && (
+            <div className="space-y-3">
+              {floatingTasks.length > 0 && (
+                <div className="rounded-lg border border-dashed border-mint/60 bg-mint/5 p-2">
+                  <div className="mb-2 flex items-center justify-between gap-2 px-1">
+                    <span className="text-xs font-semibold text-ink">Unprioritized</span>
+                    <span className="text-[11px] text-stone-500">Drag into the list below</span>
+                  </div>
+                  <div className="space-y-2">
+                    {floatingTasks.map((task) => (
+                      <TaskRow
+                        canReorder
+                        handleProps={pendingHandleProps(task)}
+                        innerRef={(el) => {
+                          pendingRowRefs.current[task.id] = el;
+                        }}
+                        isDragging={pendingDrag?.taskId === task.id}
+                        isSorting={Boolean(pendingDrag)}
+                        key={task.id}
+                        onEdit={() => onEditTask(task)}
+                        position={-1}
+                        task={task}
+                        transform={pendingDrag?.taskId === task.id ? `translate3d(0, ${pendingDrag.dy}px, 0)` : undefined}
+                        unprioritized
+                        useProjectPriority={false}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+              {(canReorder || floatingTasks.length > 0) && (
                 <p className="px-1 pb-2 text-[11px] text-stone-400">
                   Drag <GripVertical className="inline align-text-bottom" size={12} /> to change priority.
                 </p>
               )}
               {/* `relative` makes this the offsetParent the drag hook measures against. */}
-              <div className="relative space-y-2" ref={sort.containerRef}>
-                {order.map((task, index) => (
-                  <TaskRow
-                    canReorder={canReorder}
-                    handleProps={sort.handleProps(index)}
-                    innerRef={sort.registerRow(index)}
-                    isDragging={sort.draggingIndex === index}
-                    isSorting={sort.isDragging}
-                    key={task.id}
-                    onEdit={() => onEditTask(task)}
-                    position={sort.positionOf(index)}
-                    task={task}
-                    transform={sort.transformFor(index)}
-                    useProjectPriority={isRealProject}
-                  />
-                ))}
+              <div
+                className={`relative space-y-2 rounded-lg ${
+                  order.length === 0 && floatingTasks.length > 0 ? "border border-dashed border-stone-300 bg-white/80 px-3 py-6" : ""
+                }`}
+                ref={sort.containerRef}
+              >
+                {order.length === 0 && floatingTasks.length > 0 ? (
+                  <div className="text-center text-sm text-stone-400">Drop here to set priority 1.</div>
+                ) : (
+                  order.map((task, index) => (
+                    <TaskRow
+                      canReorder={canReorder}
+                      handleProps={sort.handleProps(index)}
+                      innerRef={sort.registerRow(index)}
+                      isDragging={sort.draggingIndex === index}
+                      isSorting={sort.isDragging}
+                      key={task.id}
+                      onEdit={() => onEditTask(task)}
+                      position={sort.positionOf(index)}
+                      task={task}
+                      transform={sort.transformFor(index)}
+                      useProjectPriority={isRealProject}
+                    />
+                  ))
+                )}
               </div>
-            </>
+            </div>
           )}
         </div>
       )}
@@ -616,6 +757,7 @@ function TaskRow({
   innerRef,
   handleProps,
   onEdit,
+  unprioritized = false,
   useProjectPriority
 }: {
   task: Task;
@@ -627,9 +769,12 @@ function TaskRow({
   innerRef: (el: HTMLElement | null) => void;
   handleProps: DragHandleProps;
   onEdit: () => void;
+  unprioritized?: boolean;
   useProjectPriority: boolean;
 }) {
-  const priority = taskPriority(task, position + 1, useProjectPriority);
+  const priority = unprioritized
+    ? { label: "No priority", dot: "bg-stone-300", tone: "border-stone-300 bg-white text-stone-500" }
+    : taskPriority(task, position + 1, useProjectPriority);
   return (
     <article
       className={`group relative flex items-start gap-2 rounded-lg border bg-white px-2 py-2.5 shadow-sm sm:gap-3 sm:px-3 ${
@@ -658,14 +803,14 @@ function TaskRow({
         <span aria-hidden className="w-1 shrink-0 sm:w-2" />
       )}
       <span className="mt-0.5 grid h-7 min-w-7 shrink-0 place-items-center rounded-md bg-ink px-1.5 text-[11px] font-bold text-white sm:h-8 sm:min-w-8 sm:px-2 sm:text-xs">
-        {useProjectPriority ? priority.label : position + 1}
+        {unprioritized ? "New" : useProjectPriority ? priority.label : position + 1}
       </span>
       <div className="min-w-0 flex-1">
         <h4 className="break-words text-sm font-semibold leading-5 text-ink">{task.title}</h4>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold ${priority.tone}`}>
             <span className={`h-1.5 w-1.5 rounded-full ${priority.dot}`} />
-            {useProjectPriority ? `Priority ${priority.label}` : priority.label}
+            {unprioritized ? "No priority" : useProjectPriority ? `Priority ${priority.label}` : priority.label}
           </span>
           {task.status !== "open" && (
             <span className="inline-flex items-center gap-1 rounded-md border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] text-stone-500">

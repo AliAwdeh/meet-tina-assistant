@@ -357,7 +357,7 @@ def test_openwa_can_move_task_between_projects_and_change_priority(client: TestC
     assert priority_response.status_code == 200
     priority_reply = priority_response.json()["reply"]
     assert "Updated task" in priority_reply
-    assert "priority stayed Urgent" in priority_reply
+    assert "priority Unranked -> Urgent" in priority_reply
 
     with SessionLocal() as db:
         lina = db.scalar(select(Person).where(Person.email == "lina@example.com"))
