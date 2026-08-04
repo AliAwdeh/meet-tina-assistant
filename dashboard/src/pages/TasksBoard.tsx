@@ -403,7 +403,7 @@ export function TasksBoard() {
         <Sheet
           description={
             creating && formDefaults.compact
-              ? "Create it here with a title and description."
+              ? "Create it here with a title, due date, and description."
               : "Assign it to a person, optionally place it inside a project, and set its priority position."
           }
           onClose={() => {
@@ -1119,9 +1119,18 @@ function TaskForm({
         });
       }}
     >
-      <label className={`block text-sm font-medium ${simpleCreate ? "md:col-span-3" : "md:col-span-2"}`}>
+      <label className="block text-sm font-medium md:col-span-2">
         Title
         <input className={inputClass} required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
+      </label>
+      <label className="block text-sm font-medium">
+        Due date
+        <input
+          className={inputClass}
+          type="date"
+          value={form.due_date}
+          onChange={(event) => setForm({ ...form, due_date: event.target.value })}
+        />
       </label>
       {!simpleCreate && (
         <>
@@ -1181,15 +1190,6 @@ function TaskForm({
                 </option>
               ))}
             </select>
-          </label>
-          <label className="block text-sm font-medium">
-            Due date
-            <input
-              className={inputClass}
-              type="date"
-              value={form.due_date}
-              onChange={(event) => setForm({ ...form, due_date: event.target.value })}
-            />
           </label>
         </>
       )}
