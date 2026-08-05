@@ -87,10 +87,10 @@ export function App() {
         className="sticky top-0 z-30 border-b border-stone-200/70 bg-[#f7f4ee]/85 backdrop-blur"
         style={{ paddingTop: "var(--safe-top)" }}
       >
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-5 sm:py-3.5">
+        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-3 px-4 py-3 sm:px-6 sm:py-3.5">
           <button className="flex items-center gap-2.5 text-left" onClick={() => goTo(HOME)} type="button">
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-ink text-sm font-bold text-mint">MT</span>
-            <span className="text-base font-semibold tracking-tight sm:text-lg">Meet Tina</span>
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-ink text-sm font-bold text-mint">ST</span>
+            <span className="text-base font-semibold tracking-tight sm:text-lg">Sami&apos;s Team</span>
           </button>
           <button
             aria-label="Open menu"
@@ -104,7 +104,7 @@ export function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-4 py-5 sm:px-5 sm:py-6">
+      <main className="mx-auto max-w-[1600px] px-4 py-5 sm:px-6 sm:py-8">
         <ErrorBoundary key={page}>{renderPage(page)}</ErrorBoundary>
       </main>
 

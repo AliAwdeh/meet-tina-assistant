@@ -229,7 +229,14 @@ def passkey_register_verify(
         transports=transports if isinstance(transports, list) else [],
     )
     db.add(passkey)
-    write_audit(db, actor_type="dashboard_user", actor_id=user.id, action="register_passkey", entity_type="user_passkey", entity_id=passkey.id)
+    write_audit(
+        db,
+        actor_type="dashboard_user",
+        actor_id=user.id,
+        action="register_passkey",
+        entity_type="user_passkey",
+        entity_id=passkey.id,
+    )
     db.commit()
     db.refresh(passkey)
     return _passkey_read(passkey)

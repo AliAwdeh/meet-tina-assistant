@@ -1,1 +1,1 @@
-"""Meet Tina backend package."""
+"""Sami's Team backend package."""

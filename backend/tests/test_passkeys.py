@@ -38,12 +38,14 @@ def test_passkey_registration_options_store_challenge(client: TestClient) -> Non
 
     assert response.status_code == 200
     options = response.json()["options"]
-    assert options["rp"]["name"] == "Meet Tina"
+    assert options["rp"]["name"] == "Sami's Team"
     assert options["rp"]["id"] == "localhost"
     assert options["user"]["name"] == "sami@example.com"
     assert options["authenticatorSelection"]["userVerification"] == "required"
     with SessionLocal() as db:
-        challenge = db.scalar(select(PasskeyChallenge).where(PasskeyChallenge.user_id == user.id, PasskeyChallenge.purpose == "registration"))
+        challenge = db.scalar(
+            select(PasskeyChallenge).where(PasskeyChallenge.user_id == user.id, PasskeyChallenge.purpose == "registration")
+        )
         assert challenge is not None
         assert challenge.challenge == options["challenge"]
 
@@ -85,6 +87,8 @@ def test_passkey_login_options_store_authentication_challenge(client: TestClient
     assert options["userVerification"] == "required"
     assert options["allowCredentials"][0]["id"] == credential_id
     with SessionLocal() as db:
-        challenge = db.scalar(select(PasskeyChallenge).where(PasskeyChallenge.user_id == user.id, PasskeyChallenge.purpose == "authentication"))
+        challenge = db.scalar(
+            select(PasskeyChallenge).where(PasskeyChallenge.user_id == user.id, PasskeyChallenge.purpose == "authentication")
+        )
         assert challenge is not None
         assert challenge.challenge == options["challenge"]

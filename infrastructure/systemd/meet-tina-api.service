@@ -1,5 +1,5 @@
 [Unit]
-Description=Meet Tina API
+Description=Sami's Team API
 After=network.target
 
 [Service]

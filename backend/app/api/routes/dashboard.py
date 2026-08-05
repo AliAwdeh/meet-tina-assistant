@@ -514,7 +514,7 @@ def _render_task_digest(db: Session, recipient: Person, entries: list[dict[str, 
         "border-radius:14px;overflow:hidden;box-shadow:0 10px 30px rgba(31,42,36,.08);\">",
         "<div style=\"background:#20352b;padding:24px 26px;color:#ffffff;\">",
         "<p style=\"margin:0 0 8px;color:#9ad1af;font-size:12px;font-weight:800;"
-        "letter-spacing:.08em;text-transform:uppercase;\">Meet Tina</p>",
+        "letter-spacing:.08em;text-transform:uppercase;\">Sami's Team</p>",
         f"<h1 style=\"margin:0;font-size:24px;line-height:1.25;font-weight:800;\">{escape(subject)}</h1>",
         f"<p style=\"margin:10px 0 0;color:#dbe7dd;font-size:14px;line-height:1.55;\">"
         f"Hi {escape(recipient.full_name)}, here is the clean summary of what changed.</p>",
@@ -581,7 +581,7 @@ def _render_task_digest(db: Session, recipient: Person, entries: list[dict[str, 
     html_parts.extend(
         [
             "<p style=\"margin:24px 0 0;color:#7a7168;font-size:12px;line-height:1.5;\">"
-            "This email was generated from the latest saved task changes in Meet Tina.</p>",
+            "This email was generated from the latest saved task changes in Sami's Team.</p>",
             "</div>",
             "</div>",
             "</div>",

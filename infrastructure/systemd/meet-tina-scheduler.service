@@ -1,5 +1,5 @@
 [Unit]
-Description=Meet Tina Scheduler
+Description=Sami's Team Scheduler
 After=network.target meet-tina-api.service
 
 [Service]

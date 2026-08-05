@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_name: str = "Meet Tina"
+    app_name: str = "Sami's Team"
     environment: str = "development"
     public_base_url: str = "http://localhost:5000"
     dashboard_base_url: str = "http://localhost:5174"
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     cookie_secure: bool = True
 
     passkey_rp_id: str = ""
-    passkey_rp_name: str = "Meet Tina"
+    passkey_rp_name: str = "Sami's Team"
     passkey_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     ai_base_url: str = "https://langcc.maidstech.ai/v1"

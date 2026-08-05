@@ -1,5 +1,5 @@
 [Unit]
-Description=Meet Tina Media Worker
+Description=Sami's Team Media Worker
 After=network.target
 
 [Service]

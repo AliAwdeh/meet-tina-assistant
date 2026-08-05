@@ -314,19 +314,6 @@ export function TasksBoard() {
 
   return (
     <div className="space-y-4 sm:space-y-6">
-      <div className="overflow-hidden rounded-lg border border-stone-200/70 bg-white shadow-sm">
-        <div className="border-l-4 border-mint p-5 sm:p-8">
-          <p className="text-xs font-medium text-mint sm:text-sm">Meet Tina</p>
-          <h1 className="mt-1.5 text-[26px] font-semibold leading-tight tracking-tight sm:mt-2 sm:text-3xl md:text-4xl">
-            Hello Sami, what are we doing today?
-          </h1>
-          <p className="mt-2.5 max-w-xl text-sm text-stone-500 sm:mt-3">
-            {groups.length} {groups.length === 1 ? "person" : "people"} · {totalProjects} {totalProjects === 1 ? "project" : "projects"} ·{" "}
-            {totalTasks} {totalTasks === 1 ? "task" : "tasks"} in play.
-          </p>
-        </div>
-      </div>
-
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <label className="flex h-12 min-w-0 flex-1 items-center gap-2.5 rounded-lg border border-stone-200/80 bg-white px-4 shadow-sm transition focus-within:border-ink">
           <Search className="shrink-0 text-stone-400" size={18} />
@@ -367,6 +354,18 @@ export function TasksBoard() {
             New project
           </Button>
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-sm text-stone-500">
+        <span className="rounded-md border border-stone-200 bg-white px-3 py-1.5 shadow-sm">
+          {groups.length} {groups.length === 1 ? "person" : "people"}
+        </span>
+        <span className="rounded-md border border-stone-200 bg-white px-3 py-1.5 shadow-sm">
+          {totalProjects} {totalProjects === 1 ? "project" : "projects"}
+        </span>
+        <span className="rounded-md border border-stone-200 bg-white px-3 py-1.5 shadow-sm">
+          {totalTasks} {totalTasks === 1 ? "task" : "tasks"}
+        </span>
       </div>
 
       {(tasks.isError ||
