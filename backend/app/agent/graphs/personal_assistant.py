@@ -686,7 +686,7 @@ def _planner_system_prompt() -> str:
     system = Path(__file__).parents[1].joinpath("prompts/system.md").read_text()
     return (
         f"{system}\n\n"
-        "You are the intent classifier and planner for Sami's Team. You own semantic interpretation; "
+        "You are the intent classifier and planner for babysitting. You own semantic interpretation; "
         "the code layer will only validate entities and execute explicit tools. Build an ordered platform action plan.\n"
         "Return only JSON in this shape: {\"actions\": [ExtractedAction, ...]}.\n"
         "Allowed action_type values: upsert_person, create_task, update_task, complete_task, delete_task, "
@@ -1368,7 +1368,7 @@ async def _send_project_change_email(
         "border-radius:14px;overflow:hidden;box-shadow:0 10px 30px rgba(31,42,36,.08);\">"
         "<div style=\"background:#20352b;padding:24px 26px;color:#ffffff;\">"
         "<p style=\"margin:0 0 8px;color:#9ad1af;font-size:12px;font-weight:800;"
-        "letter-spacing:.08em;text-transform:uppercase;\">Sami's Team</p>"
+        "letter-spacing:.08em;text-transform:uppercase;\">babysitting</p>"
         f"<h1 style=\"margin:0;font-size:24px;line-height:1.25;font-weight:800;\">{escape(subject)}</h1>"
         f"<p style=\"margin:10px 0 0;color:#dbe7dd;font-size:14px;\">Project: {escape(project.name)}</p>"
         "</div>"
@@ -1378,7 +1378,7 @@ async def _send_project_change_email(
         f"<ul style=\"margin:0;padding-left:18px;color:#4b443d;font-size:14px;line-height:1.7;\">{html_changes}</ul>"
         f"{html_tasks}"
         "<p style=\"margin:24px 0 0;color:#7a7168;font-size:12px;line-height:1.5;\">"
-        "This email was generated from Sami's Team project changes.</p>"
+        "This email was generated from babysitting project changes.</p>"
         "</div></div></div>"
     )
     await send_email_tool(
@@ -1951,7 +1951,7 @@ async def _general_conversation_reply(state: AssistantState) -> str:
     system = Path(__file__).parents[1].joinpath("prompts/system.md").read_text()
     prompt = (
         f"{system}\n\n"
-        "Reply to the latest WhatsApp message as Sami's Team.\n"
+        "Reply to the latest WhatsApp message as babysitting.\n"
         "Keep it concise and useful, 1-4 short sentences.\n"
         "If the user only greets you, greet them and offer concrete things you can do.\n"
         "If they ask why something happened, answer directly.\n"

@@ -188,10 +188,10 @@ def test_dashboard_updates_people_projects_and_moves_tasks(client: TestClient) -
     person = person_response.json()
     updated_person = client.put(
         f"/api/dashboard/people/{person['id']}",
-        json={"full_name": "Nour Haddad", "company": "Sami's Team", "email": "nour@example.com"},
+        json={"full_name": "Nour Haddad", "company": "babysitting", "email": "nour@example.com"},
     )
     assert updated_person.status_code == 200
-    assert updated_person.json()["company"] == "Sami's Team"
+    assert updated_person.json()["company"] == "babysitting"
 
     first_project = client.post("/api/dashboard/projects", json={"person_id": person["id"], "name": "Launch"})
     second_project = client.post("/api/dashboard/projects", json={"person_id": person["id"], "name": "Retention"})

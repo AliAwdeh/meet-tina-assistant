@@ -37,7 +37,7 @@ export function Login({ onAuthenticated }: { onAuthenticated: (user: User) => vo
             <LockKeyhole size={19} />
           </div>
           <div>
-            <h1 className="text-xl font-semibold">Sami&apos;s Team</h1>
+            <h1 className="text-xl font-semibold">babysitting</h1>
             <p className="text-sm text-stone-500">Dashboard sign in</p>
           </div>
         </div>

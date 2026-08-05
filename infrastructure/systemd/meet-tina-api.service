@@ -1,5 +1,5 @@
 [Unit]
-Description=Sami's Team API
+Description=babysitting API
 After=network.target
 
 [Service]

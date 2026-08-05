@@ -1,5 +1,5 @@
 [Unit]
-Description=Sami's Team Scheduler
+Description=babysitting Scheduler
 After=network.target meet-tina-api.service
 
 [Service]

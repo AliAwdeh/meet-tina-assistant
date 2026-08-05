@@ -1,6 +1,6 @@
 {
-  "name": "Sami's Team",
-  "short_name": "Sami Team",
+  "name": "babysitting",
+  "short_name": "babysitting",
   "description": "Operational AI personal assistant for people, projects, and task priorities.",
   "start_url": "/",
   "scope": "/",

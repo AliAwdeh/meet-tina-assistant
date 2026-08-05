@@ -38,7 +38,7 @@ def test_passkey_registration_options_store_challenge(client: TestClient) -> Non
 
     assert response.status_code == 200
     options = response.json()["options"]
-    assert options["rp"]["name"] == "Sami's Team"
+    assert options["rp"]["name"] == "babysitting"
     assert options["rp"]["id"] == "localhost"
     assert options["user"]["name"] == "sami@example.com"
     assert options["authenticatorSelection"]["userVerification"] == "required"

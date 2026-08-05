@@ -1,6 +1,6 @@
-# Sami's Team
+# babysitting
 
-Sami's Team is an operational AI personal assistant for WhatsApp. The backend is FastAPI + LangGraph + SQLAlchemy with PostgreSQL/Redis-ready deployment, OpenWA webhook ingestion, signed n8n callbacks, persistent scheduler jobs, server-side file storage, and a React dashboard.
+babysitting is an operational AI personal assistant for WhatsApp. The backend is FastAPI + LangGraph + SQLAlchemy with PostgreSQL/Redis-ready deployment, OpenWA webhook ingestion, signed n8n callbacks, persistent scheduler jobs, server-side file storage, and a React dashboard.
 
 ## Local Backend
 
@@ -27,7 +27,7 @@ The dashboard dev server runs on port `5174` to avoid the CRM frontend on `5173`
 
 ## Face ID / Passkey Setup
 
-Passkeys use WebAuthn. The browser asks iOS to verify Face ID; Sami's Team only stores the public credential and sign counter.
+Passkeys use WebAuthn. The browser asks iOS to verify Face ID; babysitting only stores the public credential and sign counter.
 
 Production defaults should include:
 

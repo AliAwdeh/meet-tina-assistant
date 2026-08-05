@@ -106,7 +106,7 @@ def _add_demo_data() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Seed Sami's Team local or server data.")
+    parser = argparse.ArgumentParser(description="Seed babysitting local or server data.")
     parser.add_argument("--reset-demo", action="store_true", help="Remove operational data and create clean demo records.")
     args = parser.parse_args()
 

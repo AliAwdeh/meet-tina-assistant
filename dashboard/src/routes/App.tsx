@@ -89,8 +89,8 @@ export function App() {
       >
         <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-3 px-4 py-3 sm:px-6 sm:py-3.5">
           <button className="flex items-center gap-2.5 text-left" onClick={() => goTo(HOME)} type="button">
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-ink text-sm font-bold text-mint">ST</span>
-            <span className="text-base font-semibold tracking-tight sm:text-lg">Sami&apos;s Team</span>
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-ink text-sm font-bold text-mint">B</span>
+            <span className="text-base font-semibold tracking-tight sm:text-lg">babysitting</span>
           </button>
           <button
             aria-label="Open menu"
