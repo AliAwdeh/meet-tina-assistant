@@ -17,14 +17,14 @@
 
 html {
   /* Stop iOS inflating text when the device rotates. */
-  font-size: 18px;
+  font-size: 19px;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
 
-@media (min-width: 640px) and (max-width: 1023px) {
+@media (min-width: 640px) {
   html {
-    font-size: 17px;
+    font-size: 18px;
   }
 }
 
