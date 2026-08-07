@@ -754,9 +754,9 @@ function ProjectSection({
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-mint/10 text-mint">
             <FolderKanban size={16} />
           </span>
-          <span className="min-w-0">
-            <span className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-sm font-semibold">{project.name}</span>
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 flex-col items-start gap-1 sm:flex-row sm:items-center sm:gap-2">
+              <span className="min-w-0 break-words text-base font-bold leading-snug text-ink sm:text-sm">{project.name}</span>
               {topPriority && (
                 <span className="hidden shrink-0 rounded-md border border-amber/50 bg-amber/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber sm:inline-block">
                   {topPriority.label}
@@ -938,7 +938,7 @@ function TaskRow({
         {unprioritized ? "New" : useProjectPriority ? priority.label : position + 1}
       </span>
       <div className="min-w-0 flex-1">
-        <h4 className="break-words text-sm font-semibold leading-5 text-ink">{task.title}</h4>
+        <h4 className="break-words text-base font-bold leading-snug text-ink sm:text-sm">{task.title}</h4>
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold ${priority.tone}`}>
             <span className={`h-1.5 w-1.5 rounded-full ${priority.dot}`} />
@@ -957,7 +957,7 @@ function TaskRow({
             </span>
           )}
         </div>
-        {task.description && <p className="mt-1 line-clamp-2 text-xs text-stone-400">{task.description}</p>}
+        {task.description && <p className="mt-1.5 line-clamp-2 text-sm leading-snug text-stone-500 sm:text-xs">{task.description}</p>}
       </div>
       <button
         aria-label="Edit task"
